@@ -51,6 +51,9 @@ function coerceCommentForXML(text) {
   return text.replaceAll("--", "- -");
 }
 
+const RCDATA_ELEMENTS = new Set(["title", "textarea"]);
+const RAWTEXT_SWITCH_TAGS = new Set(["script", "style", "xmp", "iframe", "noembed", "noframes", "textarea", "title"]);
+
 export class TokenizerOpts {
   constructor({ initialState = null, initialRawtextTag = null, discardBom = true, xmlCoercion = false } = {}) {
     this.initialState = initialState;
@@ -450,6 +453,25 @@ export class Tokenizer {
 
     if (this.currentTagKind === Tag.START) {
       this.lastStartTagName = name;
+
+      const needsRawtextCheck = RAWTEXT_SWITCH_TAGS.has(name) || name === "plaintext";
+      if (needsRawtextCheck) {
+        const stack = this.sink.openElements || this.sink.open_elements || [];
+        const currentNode = stack.length ? stack[stack.length - 1] : null;
+        const namespace = currentNode ? currentNode.namespace : null;
+
+        if (namespace == null || namespace === "html") {
+          if (RCDATA_ELEMENTS.has(name)) {
+            this.state = Tokenizer.RCDATA;
+            this.rawtextTagName = name;
+          } else if (RAWTEXT_SWITCH_TAGS.has(name)) {
+            this.state = Tokenizer.RAWTEXT;
+            this.rawtextTagName = name;
+          } else {
+            this.state = Tokenizer.PLAINTEXT;
+          }
+        }
+      }
     }
 
     const result = this.sink.processToken(tag);
