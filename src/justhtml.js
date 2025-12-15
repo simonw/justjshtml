@@ -1,3 +1,4 @@
+import { decodeHTML } from "./encoding.js";
 import { parseDocument } from "./parser.js";
 
 export class JustHTML {
@@ -13,11 +14,14 @@ export class JustHTML {
     if (typeof html === "string") {
       // Already decoded.
     } else if (html instanceof ArrayBuffer) {
-      this.encoding = encoding || "utf-8";
-      html = new TextDecoder(this.encoding).decode(new Uint8Array(html));
+      const bytes = new Uint8Array(html);
+      const decoded = decodeHTML(bytes, { transportEncoding: encoding });
+      this.encoding = decoded.encoding;
+      html = decoded.text;
     } else if (html instanceof Uint8Array) {
-      this.encoding = encoding || "utf-8";
-      html = new TextDecoder(this.encoding).decode(html);
+      const decoded = decodeHTML(html, { transportEncoding: encoding });
+      this.encoding = decoded.encoding;
+      html = decoded.text;
     } else {
       html = String(html);
     }
@@ -33,4 +37,3 @@ export class JustHTML {
     return this.root.toText(options);
   }
 }
-
