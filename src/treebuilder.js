@@ -6,6 +6,7 @@ import {
   FOREIGN_BREAKOUT_ELEMENTS,
   FORMAT_MARKER,
   FORMATTING_ELEMENTS,
+  HEADING_ELEMENTS,
   HTML_INTEGRATION_POINT_SET,
   IMPLIED_END_TAGS,
   LIST_ITEM_SCOPE_TERMINATORS,
@@ -379,55 +380,687 @@ function modeText(self, token) {
   return null;
 }
 
-function modeInBody(self, token) {
-  // Minimal IN_BODY implementation to get early tree-construction tests running.
-  if (token instanceof CharacterToken) {
-    let data = token.data || "";
-    if (data.includes("\x00")) {
-      self._parse_error("invalid-codepoint");
-      data = data.replaceAll("\x00", "");
-    }
-    if (!data) return null;
-    if (isAllWhitespace(data)) {
-      self._append_text(data);
-      return null;
-    }
-    self.frameset_ok = false;
+const EOF_ALLOWED_UNCLOSED = new Set([
+  "dd",
+  "dt",
+  "li",
+  "optgroup",
+  "option",
+  "p",
+  "rb",
+  "rp",
+  "rt",
+  "rtc",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "tr",
+  "body",
+  "html",
+]);
+
+const SET_LI = new Set(["li"]);
+const SET_DD = new Set(["dd"]);
+const SET_DT = new Set(["dt"]);
+const SET_DD_DT = new Set(["dd", "dt"]);
+const SET_RB_RP_RT_RTC = new Set(["rb", "rp", "rt", "rtc"]);
+
+function handleCharactersInBody(self, token) {
+  let data = token.data || "";
+  if (data.includes("\x00")) {
+    self._parse_error("invalid-codepoint");
+    data = data.replaceAll("\x00", "");
+  }
+  if (isAllWhitespace(data)) {
+    self._reconstruct_active_formatting_elements();
     self._append_text(data);
     return null;
   }
-  if (token instanceof CommentToken) {
-    self._append_comment(token.data);
+  self._reconstruct_active_formatting_elements();
+  self.frameset_ok = false;
+  self._append_text(data);
+  return null;
+}
+
+function handleCommentInBody(self, token) {
+  self._append_comment(token.data);
+  return null;
+}
+
+function handleBodyStartHtml(self, token) {
+  if (self.template_modes.length) {
+    self._parse_error("unexpected-start-tag", token.name);
     return null;
   }
-  if (token instanceof Tag) {
-    if (token.kind === Tag.START) {
-      if (token.name === "html") {
-        const html = self.open_elements.length ? self.open_elements[0] : null;
-        if (html) self._add_missing_attributes(html, token.attrs);
-        return null;
-      }
-      if (token.name === "body") {
-        // Ignore extra body.
-        return null;
-      }
-      self._insert_element(token, { push: !token.selfClosing });
-      return null;
-    }
-    // End tags: pop if matches current element, else ignore.
-    const name = token.name;
-    if (name === "body" || name === "html") {
-      self.mode = InsertionMode.AFTER_BODY;
-      return null;
-    }
-    if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === name) {
-      self._pop_current();
-    }
+  if (self.open_elements.length) self._add_missing_attributes(self.open_elements[0], token.attrs);
+  return null;
+}
+
+function handleBodyStartBody(self, token) {
+  if (self.template_modes.length) {
+    self._parse_error("unexpected-start-tag", token.name);
     return null;
   }
-  if (token instanceof EOFToken) {
+  if (self.open_elements.length > 1) {
+    self._parse_error("unexpected-start-tag", token.name);
+    const body = self.open_elements.length > 1 ? self.open_elements[1] : null;
+    if (body && body.name === "body") self._add_missing_attributes(body, token.attrs);
+    self.frameset_ok = false;
     return null;
   }
+  self.frameset_ok = false;
+  return null;
+}
+
+function handleBodyStartHead(self, token) {
+  self._parse_error("unexpected-start-tag", token.name);
+  return null;
+}
+
+function handleBodyStartInHead(self, token) {
+  return modeInHead(self, token);
+}
+
+function handleBodyStartBlockWithP(self, token) {
+  self._close_p_element();
+  self._insert_element(token, { push: true });
+  return null;
+}
+
+function handleBodyStartHeading(self, token) {
+  self._close_p_element();
+  if (self.open_elements.length && HEADING_ELEMENTS.has(self.open_elements[self.open_elements.length - 1].name)) {
+    self._parse_error("unexpected-start-tag", token.name);
+    self._pop_current();
+  }
+  self._insert_element(token, { push: true });
+  self.frameset_ok = false;
+  return null;
+}
+
+function handleBodyStartPreListing(self, token) {
+  self._close_p_element();
+  self._insert_element(token, { push: true });
+  self.ignore_lf = true;
+  self.frameset_ok = false;
+  return null;
+}
+
+function handleBodyStartForm(self, token) {
+  if (self.form_element != null) {
+    self._parse_error("unexpected-start-tag", token.name);
+    return null;
+  }
+  self._close_p_element();
+  const node = self._insert_element(token, { push: true });
+  self.form_element = node;
+  self.frameset_ok = false;
+  return null;
+}
+
+function handleBodyStartButton(self, token) {
+  if (self._has_in_scope("button")) {
+    self._parse_error("unexpected-start-tag-implies-end-tag", token.name);
+    self._close_element_by_name("button");
+  }
+  self._insert_element(token, { push: true });
+  self.frameset_ok = false;
+  return null;
+}
+
+function handleBodyStartParagraph(self, token) {
+  self._close_p_element();
+  self._insert_element(token, { push: true });
+  return null;
+}
+
+function handleBodyStartMath(self, token) {
+  self._reconstruct_active_formatting_elements();
+  const attrs = self._prepare_foreign_attributes("math", token.attrs);
+  const newTag = new Tag(Tag.START, token.name, attrs, token.selfClosing);
+  self._insert_element(newTag, { push: !token.selfClosing, namespace: "math" });
+  return null;
+}
+
+function handleBodyStartSvg(self, token) {
+  self._reconstruct_active_formatting_elements();
+  const adjustedName = self._adjust_svg_tag_name(token.name);
+  const attrs = self._prepare_foreign_attributes("svg", token.attrs);
+  const newTag = new Tag(Tag.START, adjustedName, attrs, token.selfClosing);
+  self._insert_element(newTag, { push: !token.selfClosing, namespace: "svg" });
+  return null;
+}
+
+function handleBodyStartLi(self, token) {
+  self.frameset_ok = false;
+  self._close_p_element();
+  if (self._has_in_list_item_scope("li")) self._pop_until_any_inclusive(SET_LI);
+  self._insert_element(token, { push: true });
+  return null;
+}
+
+function handleBodyStartDdDt(self, token) {
+  self.frameset_ok = false;
+  self._close_p_element();
+  const name = token.name;
+  if (name === "dd") {
+    if (self._has_in_definition_scope("dd")) self._pop_until_any_inclusive(SET_DD);
+    if (self._has_in_definition_scope("dt")) self._pop_until_any_inclusive(SET_DT);
+  } else {
+    if (self._has_in_definition_scope("dt")) self._pop_until_any_inclusive(SET_DT);
+    if (self._has_in_definition_scope("dd")) self._pop_until_any_inclusive(SET_DD);
+  }
+  self._insert_element(token, { push: true });
+  return null;
+}
+
+function handleBodyStartA(self, token) {
+  if (self._has_active_formatting_entry("a")) {
+    self._adoption_agency("a");
+    self._remove_last_active_formatting_by_name("a");
+    self._remove_last_open_element_by_name("a");
+  }
+  self._reconstruct_active_formatting_elements();
+  const node = self._insert_element(token, { push: true });
+  self._append_active_formatting_entry("a", token.attrs, node);
+  return null;
+}
+
+function handleBodyStartFormatting(self, token) {
+  const name = token.name;
+  if (name === "nobr" && self._in_scope("nobr")) {
+    self._adoption_agency("nobr");
+    self._remove_last_active_formatting_by_name("nobr");
+    self._remove_last_open_element_by_name("nobr");
+  }
+  self._reconstruct_active_formatting_elements();
+  const dupIndex = self._find_active_formatting_duplicate(name, token.attrs);
+  if (dupIndex != null) self._remove_formatting_entry(dupIndex);
+  const node = self._insert_element(token, { push: true });
+  self._append_active_formatting_entry(name, token.attrs, node);
+  return null;
+}
+
+function handleBodyStartAppletLike(self, token) {
+  self._reconstruct_active_formatting_elements();
+  self._insert_element(token, { push: true });
+  self._push_formatting_marker();
+  self.frameset_ok = false;
+  return null;
+}
+
+function handleBodyStartBr(self, token) {
+  self._close_p_element();
+  self._reconstruct_active_formatting_elements();
+  self._insert_element(token, { push: false });
+  self.frameset_ok = false;
+  return null;
+}
+
+function handleBodyStartFrameset(self, token) {
+  if (!self.frameset_ok) {
+    self._parse_error("unexpected-start-tag-ignored", token.name);
+    return null;
+  }
+
+  let bodyIndex = null;
+  for (let i = 0; i < self.open_elements.length; i += 1) {
+    if (self.open_elements[i].name === "body") {
+      bodyIndex = i;
+      break;
+    }
+  }
+  if (bodyIndex == null) {
+    self._parse_error("unexpected-start-tag-ignored", token.name);
+    return null;
+  }
+
+  const bodyElem = self.open_elements[bodyIndex];
+  if (bodyElem.parent) bodyElem.parent.remove_child(bodyElem);
+  self.open_elements.length = bodyIndex;
+
+  self._insert_element(token, { push: true });
+  self.mode = InsertionMode.IN_FRAMESET;
+  return null;
+}
+
+function handleBodyStartStructureIgnored(self, token) {
+  self._parse_error("unexpected-start-tag-ignored", token.name);
+  return null;
+}
+
+function handleBodyStartColOrFrame(self, token) {
+  if (self.fragment_context == null) {
+    self._parse_error("unexpected-start-tag-ignored", token.name);
+    return null;
+  }
+  self._insert_element(token, { push: false });
+  return null;
+}
+
+function handleBodyStartImage(self, token) {
+  self._parse_error("image-start-tag", token.name);
+  const imgToken = new Tag(Tag.START, "img", token.attrs, token.selfClosing);
+  self._reconstruct_active_formatting_elements();
+  self._insert_element(imgToken, { push: false });
+  self.frameset_ok = false;
+  return null;
+}
+
+function handleBodyStartVoidWithFormatting(self, token) {
+  self._reconstruct_active_formatting_elements();
+  self._insert_element(token, { push: false });
+  self.frameset_ok = false;
+  return null;
+}
+
+function handleBodyStartSimpleVoid(self, token) {
+  self._insert_element(token, { push: false });
+  return null;
+}
+
+function handleBodyStartInput(self, token) {
+  let inputType = null;
+  const attrs = token.attrs || {};
+  for (const [name, value] of Object.entries(attrs)) {
+    if (name === "type") {
+      inputType = String(value || "").toLowerCase();
+      break;
+    }
+  }
+  self._insert_element(token, { push: false });
+  if (inputType !== "hidden") self.frameset_ok = false;
+  return null;
+}
+
+function handleBodyStartTable(self, token) {
+  if (self.quirks_mode !== "quirks") self._close_p_element();
+  self._insert_element(token, { push: true });
+  self.frameset_ok = false;
+  self.mode = InsertionMode.IN_TABLE;
+  return null;
+}
+
+function handleBodyStartPlaintextXmp(self, token) {
+  self._close_p_element();
+  self._insert_element(token, { push: true });
+  self.frameset_ok = false;
+  if (token.name === "plaintext") {
+    self.tokenizer_state_override = TokenSinkResult.Plaintext;
+  } else {
+    self.original_mode = self.mode;
+    self.mode = InsertionMode.TEXT;
+  }
+  return null;
+}
+
+function handleBodyStartTextarea(self, token) {
+  self._insert_element(token, { push: true });
+  self.ignore_lf = true;
+  self.frameset_ok = false;
+  return null;
+}
+
+function handleBodyStartSelect(self, token) {
+  self._reconstruct_active_formatting_elements();
+  self._insert_element(token, { push: true });
+  self.frameset_ok = false;
+  self._reset_insertion_mode();
+  return null;
+}
+
+function handleBodyStartOption(self, token) {
+  if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
+    self.open_elements.pop();
+  }
+  self._reconstruct_active_formatting_elements();
+  self._insert_element(token, { push: true });
+  return null;
+}
+
+function handleBodyStartOptgroup(self, token) {
+  if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
+    self.open_elements.pop();
+  }
+  self._reconstruct_active_formatting_elements();
+  self._insert_element(token, { push: true });
+  return null;
+}
+
+function handleBodyStartRpRt(self, token) {
+  self._generate_implied_end_tags("rtc");
+  self._insert_element(token, { push: true });
+  return null;
+}
+
+function handleBodyStartRbRtc(self, token) {
+  if (self.open_elements.length && SET_RB_RP_RT_RTC.has(self.open_elements[self.open_elements.length - 1].name)) {
+    self._generate_implied_end_tags();
+  }
+  self._insert_element(token, { push: true });
+  return null;
+}
+
+function handleBodyStartTableParseError(self, token) {
+  self._parse_error("unexpected-start-tag", token.name);
+  return null;
+}
+
+function handleBodyStartDefault(self, token) {
+  self._reconstruct_active_formatting_elements();
+  self._insert_element(token, { push: true });
+  if (token.selfClosing) self._parse_error("non-void-html-element-start-tag-with-trailing-solidus", token.name);
+  self.frameset_ok = false;
+  return null;
+}
+
+const BODY_START_HANDLERS = {
+  a: handleBodyStartA,
+  address: handleBodyStartBlockWithP,
+  applet: handleBodyStartAppletLike,
+  area: handleBodyStartVoidWithFormatting,
+  article: handleBodyStartBlockWithP,
+  aside: handleBodyStartBlockWithP,
+  b: handleBodyStartFormatting,
+  base: handleBodyStartInHead,
+  basefont: handleBodyStartInHead,
+  bgsound: handleBodyStartInHead,
+  big: handleBodyStartFormatting,
+  blockquote: handleBodyStartBlockWithP,
+  body: handleBodyStartBody,
+  br: handleBodyStartBr,
+  button: handleBodyStartButton,
+  caption: handleBodyStartTableParseError,
+  center: handleBodyStartBlockWithP,
+  code: handleBodyStartFormatting,
+  col: handleBodyStartColOrFrame,
+  colgroup: handleBodyStartStructureIgnored,
+  dd: handleBodyStartDdDt,
+  details: handleBodyStartBlockWithP,
+  dialog: handleBodyStartBlockWithP,
+  dir: handleBodyStartBlockWithP,
+  div: handleBodyStartBlockWithP,
+  dl: handleBodyStartBlockWithP,
+  dt: handleBodyStartDdDt,
+  em: handleBodyStartFormatting,
+  embed: handleBodyStartVoidWithFormatting,
+  fieldset: handleBodyStartBlockWithP,
+  figcaption: handleBodyStartBlockWithP,
+  figure: handleBodyStartBlockWithP,
+  font: handleBodyStartFormatting,
+  footer: handleBodyStartBlockWithP,
+  form: handleBodyStartForm,
+  frame: handleBodyStartColOrFrame,
+  frameset: handleBodyStartFrameset,
+  h1: handleBodyStartHeading,
+  h2: handleBodyStartHeading,
+  h3: handleBodyStartHeading,
+  h4: handleBodyStartHeading,
+  h5: handleBodyStartHeading,
+  h6: handleBodyStartHeading,
+  head: handleBodyStartHead,
+  header: handleBodyStartBlockWithP,
+  hgroup: handleBodyStartBlockWithP,
+  html: handleBodyStartHtml,
+  i: handleBodyStartFormatting,
+  image: handleBodyStartImage,
+  img: handleBodyStartVoidWithFormatting,
+  input: handleBodyStartInput,
+  keygen: handleBodyStartVoidWithFormatting,
+  li: handleBodyStartLi,
+  link: handleBodyStartInHead,
+  listing: handleBodyStartPreListing,
+  main: handleBodyStartBlockWithP,
+  marquee: handleBodyStartAppletLike,
+  math: handleBodyStartMath,
+  menu: handleBodyStartBlockWithP,
+  meta: handleBodyStartInHead,
+  nav: handleBodyStartBlockWithP,
+  nobr: handleBodyStartFormatting,
+  noframes: handleBodyStartInHead,
+  object: handleBodyStartAppletLike,
+  ol: handleBodyStartBlockWithP,
+  optgroup: handleBodyStartOptgroup,
+  option: handleBodyStartOption,
+  p: handleBodyStartParagraph,
+  param: handleBodyStartSimpleVoid,
+  plaintext: handleBodyStartPlaintextXmp,
+  pre: handleBodyStartPreListing,
+  rb: handleBodyStartRbRtc,
+  rp: handleBodyStartRpRt,
+  rt: handleBodyStartRpRt,
+  rtc: handleBodyStartRbRtc,
+  s: handleBodyStartFormatting,
+  script: handleBodyStartInHead,
+  search: handleBodyStartBlockWithP,
+  section: handleBodyStartBlockWithP,
+  select: handleBodyStartSelect,
+  small: handleBodyStartFormatting,
+  source: handleBodyStartSimpleVoid,
+  strike: handleBodyStartFormatting,
+  strong: handleBodyStartFormatting,
+  style: handleBodyStartInHead,
+  summary: handleBodyStartBlockWithP,
+  svg: handleBodyStartSvg,
+  table: handleBodyStartTable,
+  tbody: handleBodyStartStructureIgnored,
+  td: handleBodyStartStructureIgnored,
+  template: handleBodyStartInHead,
+  textarea: handleBodyStartTextarea,
+  tfoot: handleBodyStartStructureIgnored,
+  th: handleBodyStartStructureIgnored,
+  thead: handleBodyStartStructureIgnored,
+  title: handleBodyStartInHead,
+  tr: handleBodyStartStructureIgnored,
+  track: handleBodyStartSimpleVoid,
+  tt: handleBodyStartFormatting,
+  u: handleBodyStartFormatting,
+  ul: handleBodyStartBlockWithP,
+  wbr: handleBodyStartVoidWithFormatting,
+  xmp: handleBodyStartPlaintextXmp,
+};
+
+function handleBodyEndBody(self, token) {
+  if (self._in_scope("body")) self.mode = InsertionMode.AFTER_BODY;
+  return null;
+}
+
+function handleBodyEndHtml(self, token) {
+  if (self._in_scope("body")) return ["reprocess", InsertionMode.AFTER_BODY, token];
+  return null;
+}
+
+function handleBodyEndP(self, token) {
+  if (!self._close_p_element()) {
+    self._parse_error("unexpected-end-tag", token.name);
+    const phantom = new Tag(Tag.START, "p", {}, false);
+    self._insert_element(phantom, { push: true });
+    self._close_p_element();
+  }
+  return null;
+}
+
+function handleBodyEndLi(self, token) {
+  if (!self._has_in_list_item_scope("li")) {
+    self._parse_error("unexpected-end-tag", token.name);
+    return null;
+  }
+  self._pop_until_any_inclusive(SET_LI);
+  return null;
+}
+
+function handleBodyEndDdDt(self, token) {
+  const name = token.name;
+  if (!self._has_in_definition_scope(name)) {
+    self._parse_error("unexpected-end-tag", name);
+    return null;
+  }
+  self._pop_until_any_inclusive(SET_DD_DT);
+  return null;
+}
+
+function handleBodyEndForm(self, token) {
+  if (self.form_element == null) {
+    self._parse_error("unexpected-end-tag", token.name);
+    return null;
+  }
+  const removed = self._remove_from_open_elements(self.form_element);
+  self.form_element = null;
+  if (!removed) self._parse_error("unexpected-end-tag", token.name);
+  return null;
+}
+
+function handleBodyEndAppletLike(self, token) {
+  const name = token.name;
+  if (!self._in_scope(name)) {
+    self._parse_error("unexpected-end-tag", name);
+    return null;
+  }
+  while (self.open_elements.length) {
+    const popped = self.open_elements.pop();
+    if (popped.name === name) break;
+  }
+  self._clear_active_formatting_up_to_marker();
+  return null;
+}
+
+function handleBodyEndHeading(self, token) {
+  const name = token.name;
+  if (!self._has_any_in_scope(HEADING_ELEMENTS)) {
+    self._parse_error("unexpected-end-tag", name);
+    return null;
+  }
+  self._generate_implied_end_tags();
+  if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name !== name) {
+    self._parse_error("end-tag-too-early", name);
+  }
+  while (self.open_elements.length) {
+    const popped = self.open_elements.pop();
+    if (HEADING_ELEMENTS.has(popped.name)) break;
+  }
+  return null;
+}
+
+function handleBodyEndBlock(self, token) {
+  const name = token.name;
+  if (!self._in_scope(name)) {
+    self._parse_error("unexpected-end-tag", name);
+    return null;
+  }
+  self._generate_implied_end_tags();
+  if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name !== name) {
+    self._parse_error("end-tag-too-early", name);
+  }
+  self._pop_until_any_inclusive(new Set([name]));
+  return null;
+}
+
+function handleBodyEndTemplate(self, token) {
+  const hasTemplate = self.open_elements.some((node) => node.name === "template");
+  if (!hasTemplate) return null;
+  self._generate_implied_end_tags();
+  self._pop_until_inclusive("template");
+  self._clear_active_formatting_up_to_marker();
+  if (self.template_modes.length) self.template_modes.pop();
+  self._reset_insertion_mode();
+  return null;
+}
+
+const BODY_END_HANDLERS = {
+  address: handleBodyEndBlock,
+  applet: handleBodyEndAppletLike,
+  article: handleBodyEndBlock,
+  aside: handleBodyEndBlock,
+  blockquote: handleBodyEndBlock,
+  body: handleBodyEndBody,
+  button: handleBodyEndBlock,
+  center: handleBodyEndBlock,
+  dd: handleBodyEndDdDt,
+  details: handleBodyEndBlock,
+  dialog: handleBodyEndBlock,
+  dir: handleBodyEndBlock,
+  div: handleBodyEndBlock,
+  dl: handleBodyEndBlock,
+  dt: handleBodyEndDdDt,
+  fieldset: handleBodyEndBlock,
+  figcaption: handleBodyEndBlock,
+  figure: handleBodyEndBlock,
+  footer: handleBodyEndBlock,
+  form: handleBodyEndForm,
+  h1: handleBodyEndHeading,
+  h2: handleBodyEndHeading,
+  h3: handleBodyEndHeading,
+  h4: handleBodyEndHeading,
+  h5: handleBodyEndHeading,
+  h6: handleBodyEndHeading,
+  header: handleBodyEndBlock,
+  hgroup: handleBodyEndBlock,
+  html: handleBodyEndHtml,
+  li: handleBodyEndLi,
+  listing: handleBodyEndBlock,
+  main: handleBodyEndBlock,
+  marquee: handleBodyEndAppletLike,
+  menu: handleBodyEndBlock,
+  nav: handleBodyEndBlock,
+  object: handleBodyEndAppletLike,
+  ol: handleBodyEndBlock,
+  p: handleBodyEndP,
+  pre: handleBodyEndBlock,
+  search: handleBodyEndBlock,
+  section: handleBodyEndBlock,
+  summary: handleBodyEndBlock,
+  table: handleBodyEndBlock,
+  template: handleBodyEndTemplate,
+  ul: handleBodyEndBlock,
+};
+
+function handleTagInBody(self, token) {
+  if (token.kind === Tag.START) {
+    const handler = BODY_START_HANDLERS[token.name];
+    if (handler) return handler(self, token);
+    return handleBodyStartDefault(self, token);
+  }
+
+  const name = token.name;
+  if (name === "br") {
+    self._parse_error("unexpected-end-tag", name);
+    const brTag = new Tag(Tag.START, "br", {}, false);
+    return modeInBody(self, brTag);
+  }
+
+  if (FORMATTING_ELEMENTS.has(name)) {
+    self._adoption_agency(name);
+    return null;
+  }
+
+  const handler = BODY_END_HANDLERS[name];
+  if (handler) return handler(self, token);
+
+  self._any_other_end_tag(name);
+  return null;
+}
+
+function handleEofInBody(self, token) {
+  if (self.template_modes.length) return modeInTemplate(self, token);
+
+  for (const node of self.open_elements) {
+    if (!EOF_ALLOWED_UNCLOSED.has(node.name)) {
+      self._parse_error("expected-closing-tag-but-got-eof", node.name);
+      break;
+    }
+  }
+
+  self.mode = InsertionMode.AFTER_BODY;
+  return ["reprocess", InsertionMode.AFTER_BODY, token];
+}
+
+function modeInBody(self, token) {
+  if (token instanceof CharacterToken) return handleCharactersInBody(self, token);
+  if (token instanceof CommentToken) return handleCommentInBody(self, token);
+  if (token instanceof Tag) return handleTagInBody(self, token);
+  if (token instanceof EOFToken) return handleEofInBody(self, token);
   return null;
 }
 
@@ -1048,6 +1681,132 @@ export class TreeBuilder {
       const newNode = this._insert_element(tag, { push: true });
       entry.node = newNode;
       index += 1;
+    }
+  }
+
+  _adoption_agency(subject) {
+    if (this.open_elements.length && this.open_elements[this.open_elements.length - 1].name === subject) {
+      if (!this._has_active_formatting_entry(subject)) {
+        this._pop_until_inclusive(subject);
+        return;
+      }
+    }
+
+    for (let outer = 0; outer < 8; outer += 1) {
+      const formattingElementIndex = this._find_active_formatting_index(subject);
+      if (formattingElementIndex == null) return;
+
+      const formattingEntry = this.active_formatting[formattingElementIndex];
+      if (formattingEntry === FORMAT_MARKER) return;
+      const formattingElement = formattingEntry.node;
+
+      if (!this.open_elements.includes(formattingElement)) {
+        this._parse_error("adoption-agency-1.3");
+        this._remove_formatting_entry(formattingElementIndex);
+        return;
+      }
+
+      if (!this._has_element_in_scope(formattingElement.name)) {
+        this._parse_error("adoption-agency-1.3");
+        return;
+      }
+
+      if (formattingElement !== this.open_elements[this.open_elements.length - 1]) {
+        this._parse_error("adoption-agency-1.3");
+      }
+
+      let furthestBlock = null;
+      const formattingElementInOpenIndex = this.open_elements.indexOf(formattingElement);
+      for (let i = formattingElementInOpenIndex + 1; i < this.open_elements.length; i += 1) {
+        const node = this.open_elements[i];
+        if (this._is_special_element(node)) {
+          furthestBlock = node;
+          break;
+        }
+      }
+
+      if (!furthestBlock) {
+        while (this.open_elements.length) {
+          const popped = this.open_elements.pop();
+          if (popped === formattingElement) break;
+        }
+        this._remove_formatting_entry(formattingElementIndex);
+        return;
+      }
+
+      let bookmark = formattingElementIndex + 1;
+      let node = furthestBlock;
+      let lastNode = furthestBlock;
+
+      let innerLoopCounter = 0;
+      while (true) {
+        innerLoopCounter += 1;
+
+        const nodeIndex = this.open_elements.indexOf(node);
+        node = this.open_elements[nodeIndex - 1];
+
+        if (node === formattingElement) break;
+
+        let nodeFormattingIndex = this._find_active_formatting_index_by_node(node);
+
+        if (innerLoopCounter > 3 && nodeFormattingIndex != null) {
+          this._remove_formatting_entry(nodeFormattingIndex);
+          if (nodeFormattingIndex < bookmark) bookmark -= 1;
+          nodeFormattingIndex = null;
+        }
+
+        if (nodeFormattingIndex == null) {
+          const idx = this.open_elements.indexOf(node);
+          this.open_elements.splice(idx, 1);
+          node = this.open_elements[idx];
+          continue;
+        }
+
+        const entry = this.active_formatting[nodeFormattingIndex];
+        const newElement = this._create_element(entry.name, entry.node.namespace, entry.attrs);
+        entry.node = newElement;
+        this.open_elements[this.open_elements.indexOf(node)] = newElement;
+        node = newElement;
+
+        if (lastNode === furthestBlock) bookmark = nodeFormattingIndex + 1;
+
+        if (lastNode.parent) lastNode.parent.remove_child(lastNode);
+        node.append_child(lastNode);
+
+        lastNode = node;
+      }
+
+      const commonAncestor = this.open_elements[formattingElementInOpenIndex - 1];
+      if (lastNode.parent) lastNode.parent.remove_child(lastNode);
+
+      if (this._should_foster_parenting(commonAncestor, { forTag: lastNode.name })) {
+        const [parent, position] = this._appropriate_insertion_location(commonAncestor, { foster_parenting: true });
+        this._insert_node_at(parent, position, lastNode);
+      } else if (isTemplateNode(commonAncestor) && commonAncestor.templateContent) {
+        commonAncestor.templateContent.append_child(lastNode);
+      } else {
+        commonAncestor.append_child(lastNode);
+      }
+
+      const entry = this.active_formatting[formattingElementIndex];
+      const newFormattingElement = this._create_element(entry.name, entry.node.namespace, entry.attrs);
+      entry.node = newFormattingElement;
+
+      while (furthestBlock.has_child_nodes && furthestBlock.has_child_nodes()) {
+        const child = furthestBlock.children[0];
+        furthestBlock.remove_child(child);
+        newFormattingElement.append_child(child);
+      }
+      furthestBlock.append_child(newFormattingElement);
+
+      this._remove_formatting_entry(formattingElementIndex);
+      bookmark -= 1;
+      this.active_formatting.splice(bookmark, 0, entry);
+
+      const fmtOpenIndex = this.open_elements.indexOf(formattingElement);
+      if (fmtOpenIndex !== -1) this.open_elements.splice(fmtOpenIndex, 1);
+      const furthestBlockIndex = this.open_elements.indexOf(furthestBlock);
+      this.open_elements.splice(furthestBlockIndex + 1, 0, newFormattingElement);
     }
   }
 
