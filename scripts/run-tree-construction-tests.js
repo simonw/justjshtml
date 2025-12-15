@@ -10,7 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 
 function parseArgs(argv) {
-  const out = { testsDir: null, testSpecs: [] };
+  const out = { testsDir: null, testSpecs: [], show: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--tests-dir") {
@@ -20,6 +20,8 @@ function parseArgs(argv) {
       const spec = argv[i + 1];
       if (spec) out.testSpecs.push(spec);
       i += 1;
+    } else if (arg === "--show") {
+      out.show = true;
     }
   }
   return out;
@@ -206,6 +208,11 @@ async function main() {
       } else {
         failed += 1;
         console.error(`TREE FAIL: ${filename}:${idx}`.trim());
+        if (args.show) {
+          console.error("\nINPUT:\n" + test.input + "\n");
+          console.error("EXPECTED:\n" + test.expected + "\n");
+          console.error("ACTUAL:\n" + actual + "\n");
+        }
       }
     }
   }
@@ -215,4 +222,3 @@ async function main() {
 }
 
 await main();
-
