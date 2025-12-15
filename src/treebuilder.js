@@ -348,9 +348,62 @@ function modeAfterHead(self, token) {
       return null;
     }
 
-    // Many additional rules not yet ported (frameset, head-only, etc).
-    self._insert_body_if_missing();
-    return ["reprocess", InsertionMode.IN_BODY, token];
+    if (token.kind === Tag.START && token.name === "frameset") {
+      self._insert_element(token, { push: true });
+      self.mode = InsertionMode.IN_FRAMESET;
+      return null;
+    }
+
+    if (token.kind === Tag.START && token.name === "input") {
+      let inputType = null;
+      const attrs = token.attrs || {};
+      for (const [name, value] of Object.entries(attrs)) {
+        if (name === "type") {
+          inputType = String(value || "").toLowerCase();
+          break;
+        }
+      }
+      if (inputType === "hidden") {
+        self._parse_error("unexpected-hidden-input-after-head");
+        return null;
+      }
+      self._insert_body_if_missing();
+      return ["reprocess", InsertionMode.IN_BODY, token];
+    }
+
+    if (
+      token.kind === Tag.START &&
+      ["base", "basefont", "bgsound", "link", "meta", "title", "style", "script", "noscript"].includes(token.name)
+    ) {
+      self.open_elements.push(self.head_element);
+      const result = modeInHead(self, token);
+      const headIndex = self.open_elements.indexOf(self.head_element);
+      if (headIndex !== -1) self.open_elements.splice(headIndex, 1);
+      return result;
+    }
+
+    if (token.kind === Tag.START && token.name === "template") {
+      self.open_elements.push(self.head_element);
+      self.mode = InsertionMode.IN_HEAD;
+      return ["reprocess", InsertionMode.IN_HEAD, token];
+    }
+
+    if (token.kind === Tag.END && token.name === "template") return modeInHead(self, token);
+
+    if (token.kind === Tag.END && token.name === "body") {
+      self._insert_body_if_missing();
+      return ["reprocess", InsertionMode.IN_BODY, token];
+    }
+
+    if (token.kind === Tag.END && (token.name === "html" || token.name === "br")) {
+      self._insert_body_if_missing();
+      return ["reprocess", InsertionMode.IN_BODY, token];
+    }
+
+    if (token.kind === Tag.END) {
+      self._parse_error("unexpected-end-tag-after-head", token.name);
+      return null;
+    }
   }
 
   if (token instanceof EOFToken) {
@@ -599,6 +652,13 @@ function handleBodyStartBr(self, token) {
   return null;
 }
 
+function handleBodyStartHr(self, token) {
+  self._close_p_element();
+  self._insert_element(token, { push: false });
+  self.frameset_ok = false;
+  return null;
+}
+
 function handleBodyStartFrameset(self, token) {
   if (!self.frameset_ok) {
     self._parse_error("unexpected-start-tag-ignored", token.name);
@@ -803,6 +863,7 @@ const BODY_START_HANDLERS = {
   head: handleBodyStartHead,
   header: handleBodyStartBlockWithP,
   hgroup: handleBodyStartBlockWithP,
+  hr: handleBodyStartHr,
   html: handleBodyStartHtml,
   i: handleBodyStartFormatting,
   image: handleBodyStartImage,
@@ -1097,7 +1158,952 @@ function modeAfterAfterBody(self, token) {
   return ["reprocess", InsertionMode.IN_BODY, token];
 }
 
-// Placeholder modes - will be fully ported in later milestones.
+const TABLE_BODY_CONTEXT_TAGS = new Set(["tbody", "tfoot", "thead"]);
+const TABLE_BODY_CONTEXT_CLEAR_UNTIL = new Set(["tbody", "tfoot", "thead", "template", "html"]);
+const TABLE_ROW_CONTEXT_CLEAR_UNTIL = new Set(["tr", "template", "html"]);
+const TABLE_CONTEXT_CLEAR_UNTIL = new Set(["table", "template", "html"]);
+
+const TABLE_MODE_TABLE_VOODOO_END_TAGS = new Set([
+  "body",
+  "caption",
+  "col",
+  "colgroup",
+  "html",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "tr",
+]);
+
+function modeInTable(self, token) {
+  if (token instanceof CharacterToken) {
+    let data = token.data || "";
+    if (data.includes("\x00")) {
+      self._parse_error("unexpected-null-character");
+      data = data.replaceAll("\x00", "");
+      if (!data) return null;
+      token = new CharacterToken(data);
+    }
+
+    self.pending_table_text.length = 0;
+    self.table_text_original_mode = self.mode;
+    self.mode = InsertionMode.IN_TABLE_TEXT;
+    return ["reprocess", InsertionMode.IN_TABLE_TEXT, token];
+  }
+
+  if (token instanceof CommentToken) {
+    self._append_comment(token.data);
+    return null;
+  }
+
+  if (token instanceof Tag) {
+    const name = token.name;
+    if (token.kind === Tag.START) {
+      if (name === "caption") {
+        self._clear_stack_until(TABLE_CONTEXT_CLEAR_UNTIL);
+        self._push_formatting_marker();
+        self._insert_element(token, { push: true });
+        self.mode = InsertionMode.IN_CAPTION;
+        return null;
+      }
+      if (name === "colgroup") {
+        self._clear_stack_until(TABLE_CONTEXT_CLEAR_UNTIL);
+        self._insert_element(token, { push: true });
+        self.mode = InsertionMode.IN_COLUMN_GROUP;
+        return null;
+      }
+      if (name === "col") {
+        self._clear_stack_until(TABLE_CONTEXT_CLEAR_UNTIL);
+        const implied = new Tag(Tag.START, "colgroup", {}, false);
+        self._insert_element(implied, { push: true });
+        self.mode = InsertionMode.IN_COLUMN_GROUP;
+        return ["reprocess", InsertionMode.IN_COLUMN_GROUP, token];
+      }
+      if (name === "tbody" || name === "tfoot" || name === "thead") {
+        self._clear_stack_until(TABLE_CONTEXT_CLEAR_UNTIL);
+        self._insert_element(token, { push: true });
+        self.mode = InsertionMode.IN_TABLE_BODY;
+        return null;
+      }
+      if (name === "td" || name === "th" || name === "tr") {
+        self._clear_stack_until(TABLE_CONTEXT_CLEAR_UNTIL);
+        const implied = new Tag(Tag.START, "tbody", {}, false);
+        self._insert_element(implied, { push: true });
+        self.mode = InsertionMode.IN_TABLE_BODY;
+        return ["reprocess", InsertionMode.IN_TABLE_BODY, token];
+      }
+      if (name === "table") {
+        self._parse_error("unexpected-start-tag-implies-end-tag", name);
+        const closed = self._close_table_element();
+        if (closed) return ["reprocess", self.mode, token];
+        return null;
+      }
+      if (name === "style" || name === "script") {
+        self._insert_element(token, { push: true });
+        self.original_mode = self.mode;
+        self.mode = InsertionMode.TEXT;
+        return null;
+      }
+      if (name === "template") {
+        return modeInHead(self, token);
+      }
+      if (name === "input") {
+        let inputType = null;
+        const attrs = token.attrs || {};
+        for (const [attrName, attrValue] of Object.entries(attrs)) {
+          if (attrName === "type") {
+            inputType = String(attrValue || "").toLowerCase();
+            break;
+          }
+        }
+        if (inputType === "hidden") {
+          self._parse_error("unexpected-hidden-input-in-table");
+          self._insert_element(token, { push: true });
+          self.open_elements.pop();
+          return null;
+        }
+      }
+      if (name === "form") {
+        self._parse_error("unexpected-form-in-table");
+        if (self.form_element == null) {
+          const node = self._insert_element(token, { push: true });
+          self.form_element = node;
+          self.open_elements.pop();
+        }
+        return null;
+      }
+
+      self._parse_error("unexpected-start-tag-implies-table-voodoo", name);
+      const previous = self.insert_from_table;
+      self.insert_from_table = true;
+      try {
+        return modeInBody(self, token);
+      } finally {
+        self.insert_from_table = previous;
+      }
+    }
+
+    // End tag.
+    if (name === "table") {
+      self._close_table_element();
+      return null;
+    }
+    if (TABLE_MODE_TABLE_VOODOO_END_TAGS.has(name)) {
+      self._parse_error("unexpected-end-tag", name);
+      return null;
+    }
+
+    self._parse_error("unexpected-end-tag-implies-table-voodoo", name);
+    const previous = self.insert_from_table;
+    self.insert_from_table = true;
+    try {
+      return modeInBody(self, token);
+    } finally {
+      self.insert_from_table = previous;
+    }
+  }
+
+  if (token instanceof EOFToken) {
+    if (self.template_modes.length) return modeInTemplate(self, token);
+    if (self._has_in_table_scope("table")) self._parse_error("expected-closing-tag-but-got-eof", "table");
+    return null;
+  }
+
+  return null;
+}
+
+function modeInTableText(self, token) {
+  if (token instanceof CharacterToken) {
+    let data = token.data;
+    if (data.includes("\x0c")) {
+      self._parse_error("invalid-codepoint-in-table-text");
+      data = data.replaceAll("\x0c", "");
+    }
+    if (data) self.pending_table_text.push(data);
+    return null;
+  }
+
+  self._flush_pending_table_text();
+  const original = self.table_text_original_mode ?? InsertionMode.IN_TABLE;
+  self.table_text_original_mode = null;
+  self.mode = original;
+  return ["reprocess", original, token];
+}
+
+const CAPTION_STRUCTURE_START_TAGS = new Set(["caption", "col", "colgroup", "tbody", "tfoot", "thead", "tr", "td", "th"]);
+const CAPTION_END_TAGS_NEVER_IN_SCOPE = new Set(["tbody", "tfoot", "thead"]);
+
+function modeInCaption(self, token) {
+  if (token instanceof CharacterToken) return modeInBody(self, token);
+  if (token instanceof CommentToken) {
+    self._append_comment(token.data);
+    return null;
+  }
+
+  if (token instanceof Tag) {
+    const name = token.name;
+    if (token.kind === Tag.START) {
+      if (CAPTION_STRUCTURE_START_TAGS.has(name)) {
+        self._parse_error("unexpected-start-tag-implies-end-tag", name);
+        if (self._close_caption_element()) return ["reprocess", InsertionMode.IN_TABLE, token];
+        return null;
+      }
+      if (name === "table") {
+        self._parse_error("unexpected-start-tag-implies-end-tag", name);
+        if (self._close_caption_element()) return ["reprocess", InsertionMode.IN_TABLE, token];
+        return modeInBody(self, token);
+      }
+      return modeInBody(self, token);
+    }
+
+    // End tag.
+    if (name === "caption") {
+      self._close_caption_element();
+      return null;
+    }
+    if (name === "table") {
+      if (self._close_caption_element()) return ["reprocess", InsertionMode.IN_TABLE, token];
+      return null;
+    }
+    if (CAPTION_END_TAGS_NEVER_IN_SCOPE.has(name)) {
+      self._parse_error("unexpected-end-tag", name);
+      return null;
+    }
+    return modeInBody(self, token);
+  }
+
+  if (token instanceof EOFToken) return modeInBody(self, token);
+  return null;
+}
+
+function modeInColumnGroup(self, token) {
+  const current = self.open_elements.length ? self.open_elements[self.open_elements.length - 1] : null;
+
+  if (token instanceof CharacterToken) {
+    const data = token.data || "";
+    let i = 0;
+    while (i < data.length && "\t\n\f\r ".includes(data[i])) i += 1;
+
+    if (i) self._append_text(data.slice(0, i));
+    const rest = data.slice(i);
+    if (!rest) return null;
+
+    if (current && current.name === "html") {
+      self._parse_error("unexpected-characters-in-column-group");
+      return null;
+    }
+    if (current && current.name === "template") {
+      self._parse_error("unexpected-characters-in-template-column-group");
+      return null;
+    }
+
+    self._parse_error("unexpected-characters-in-column-group");
+    self._pop_current();
+    self.mode = InsertionMode.IN_TABLE;
+    return ["reprocess", InsertionMode.IN_TABLE, new CharacterToken(rest)];
+  }
+
+  if (token instanceof CommentToken) {
+    self._append_comment(token.data);
+    return null;
+  }
+
+  if (token instanceof Tag) {
+    const name = token.name;
+    if (token.kind === Tag.START) {
+      if (name === "html") return modeInBody(self, token);
+      if (name === "col") {
+        self._insert_element(token, { push: true });
+        self.open_elements.pop();
+        return null;
+      }
+      if (name === "template") return modeInHead(self, token);
+      if (name === "colgroup") {
+        self._parse_error("unexpected-start-tag-implies-end-tag", name);
+        if (current && current.name === "colgroup") {
+          self._pop_current();
+          self.mode = InsertionMode.IN_TABLE;
+          return ["reprocess", InsertionMode.IN_TABLE, token];
+        }
+        return null;
+      }
+
+      if (
+        self.fragment_context &&
+        (self.fragment_context.tag_name || self.fragment_context.tagName || "").toLowerCase() === "colgroup" &&
+        !self._has_in_table_scope("table")
+      ) {
+        self._parse_error("unexpected-start-tag-in-column-group", name);
+        return null;
+      }
+
+      if (current && current.name === "colgroup") {
+        self._pop_current();
+        self.mode = InsertionMode.IN_TABLE;
+        return ["reprocess", InsertionMode.IN_TABLE, token];
+      }
+
+      self._parse_error("unexpected-start-tag-in-template-column-group", name);
+      return null;
+    }
+
+    // End tag.
+    if (name === "colgroup") {
+      if (current && current.name === "colgroup") {
+        self._pop_current();
+        self.mode = InsertionMode.IN_TABLE;
+      } else {
+        self._parse_error("unexpected-end-tag", name);
+      }
+      return null;
+    }
+    if (name === "col") {
+      self._parse_error("unexpected-end-tag", name);
+      return null;
+    }
+    if (name === "template") {
+      return modeInHead(self, token);
+    }
+
+    if (current && current.name !== "html") {
+      self._pop_current();
+      self.mode = InsertionMode.IN_TABLE;
+    }
+    return ["reprocess", InsertionMode.IN_TABLE, token];
+  }
+
+  if (token instanceof EOFToken) {
+    if (current && current.name === "colgroup") {
+      self._pop_current();
+      self.mode = InsertionMode.IN_TABLE;
+      return ["reprocess", InsertionMode.IN_TABLE, token];
+    }
+    if (current && current.name === "template") return modeInTemplate(self, token);
+    return null;
+  }
+
+  return null;
+}
+
+const TABLE_BODY_EXIT_START_TAGS = new Set(["caption", "col", "colgroup", "tbody", "tfoot", "thead", "table"]);
+const TABLE_BODY_UNEXPECTED_END_TAGS = new Set(["caption", "col", "colgroup", "td", "th", "tr"]);
+
+function modeInTableBody(self, token) {
+  if (token instanceof CharacterToken || token instanceof CommentToken) return modeInTable(self, token);
+
+  if (token instanceof Tag) {
+    const name = token.name;
+    if (token.kind === Tag.START) {
+      if (name === "tr") {
+        self._clear_stack_until(TABLE_BODY_CONTEXT_CLEAR_UNTIL);
+        self._insert_element(token, { push: true });
+        self.mode = InsertionMode.IN_ROW;
+        return null;
+      }
+      if (name === "td" || name === "th") {
+        self._parse_error("unexpected-cell-in-table-body");
+        self._clear_stack_until(TABLE_BODY_CONTEXT_CLEAR_UNTIL);
+        const implied = new Tag(Tag.START, "tr", {}, false);
+        self._insert_element(implied, { push: true });
+        self.mode = InsertionMode.IN_ROW;
+        return ["reprocess", InsertionMode.IN_ROW, token];
+      }
+
+      if (TABLE_BODY_EXIT_START_TAGS.has(name)) {
+        const current = self.open_elements.length ? self.open_elements[self.open_elements.length - 1] : null;
+        if (current && current.name === "template") {
+          self._parse_error("unexpected-start-tag-in-template-table-context", name);
+          return null;
+        }
+        if (
+          self.fragment_context &&
+          current &&
+          current.name === "html" &&
+          TABLE_BODY_CONTEXT_TAGS.has((self.fragment_context.tag_name || self.fragment_context.tagName || "").toLowerCase())
+        ) {
+          self._parse_error("unexpected-start-tag");
+          return null;
+        }
+        if (self.open_elements.length) {
+          self.open_elements.pop();
+          self.mode = InsertionMode.IN_TABLE;
+          return ["reprocess", InsertionMode.IN_TABLE, token];
+        }
+        self.mode = InsertionMode.IN_TABLE;
+        return null;
+      }
+
+      return modeInTable(self, token);
+    }
+
+    if (name === "tbody" || name === "tfoot" || name === "thead") {
+      if (!self._has_in_table_scope(name)) {
+        self._parse_error("unexpected-end-tag", name);
+        return null;
+      }
+      self._clear_stack_until(TABLE_BODY_CONTEXT_CLEAR_UNTIL);
+      self._pop_current();
+      self.mode = InsertionMode.IN_TABLE;
+      return null;
+    }
+
+    if (name === "table") {
+      const current = self.open_elements.length ? self.open_elements[self.open_elements.length - 1] : null;
+      if (current && current.name === "template") {
+        self._parse_error("unexpected-end-tag", name);
+        return null;
+      }
+      if (
+        self.fragment_context &&
+        current &&
+        current.name === "html" &&
+        TABLE_BODY_CONTEXT_TAGS.has((self.fragment_context.tag_name || self.fragment_context.tagName || "").toLowerCase())
+      ) {
+        self._parse_error("unexpected-end-tag", name);
+        return null;
+      }
+      if (current && TABLE_BODY_CONTEXT_TAGS.has(current.name)) self.open_elements.pop();
+      self.mode = InsertionMode.IN_TABLE;
+      return ["reprocess", InsertionMode.IN_TABLE, token];
+    }
+
+    if (TABLE_BODY_UNEXPECTED_END_TAGS.has(name)) {
+      self._parse_error("unexpected-end-tag", name);
+      return null;
+    }
+
+    return modeInTable(self, token);
+  }
+
+  if (token instanceof EOFToken) return modeInTable(self, token);
+  return null;
+}
+
+const ROW_TABLE_EXIT_START_TAGS = new Set(["caption", "col", "colgroup", "tbody", "tfoot", "thead", "tr", "table"]);
+const ROW_UNEXPECTED_END_TAGS = new Set(["caption", "col", "group", "td", "th"]);
+
+function modeInRow(self, token) {
+  if (token instanceof CharacterToken || token instanceof CommentToken) return modeInTable(self, token);
+
+  if (token instanceof Tag) {
+    const name = token.name;
+    if (token.kind === Tag.START) {
+      if (name === "td" || name === "th") {
+        self._clear_stack_until(TABLE_ROW_CONTEXT_CLEAR_UNTIL);
+        self._insert_element(token, { push: true });
+        self._push_formatting_marker();
+        self.mode = InsertionMode.IN_CELL;
+        return null;
+      }
+      if (ROW_TABLE_EXIT_START_TAGS.has(name)) {
+        if (!self._has_in_table_scope("tr")) {
+          self._parse_error("unexpected-start-tag-implies-end-tag", name);
+          return null;
+        }
+        self._end_tr_element();
+        return ["reprocess", self.mode, token];
+      }
+
+      const previous = self.insert_from_table;
+      self.insert_from_table = true;
+      try {
+        return modeInBody(self, token);
+      } finally {
+        self.insert_from_table = previous;
+      }
+    }
+
+    if (name === "tr") {
+      if (!self._has_in_table_scope("tr")) {
+        self._parse_error("unexpected-end-tag", name);
+        return null;
+      }
+      self._end_tr_element();
+      return null;
+    }
+
+    if (name === "table" || name === "tbody" || name === "tfoot" || name === "thead") {
+      if (self._has_in_table_scope(name)) {
+        self._end_tr_element();
+        return ["reprocess", self.mode, token];
+      }
+      self._parse_error("unexpected-end-tag", name);
+      return null;
+    }
+
+    if (ROW_UNEXPECTED_END_TAGS.has(name)) {
+      self._parse_error("unexpected-end-tag", name);
+      return null;
+    }
+
+    const previous = self.insert_from_table;
+    self.insert_from_table = true;
+    try {
+      return modeInBody(self, token);
+    } finally {
+      self.insert_from_table = previous;
+    }
+  }
+
+  if (token instanceof EOFToken) return modeInTable(self, token);
+  return null;
+}
+
+const CELL_STRUCTURE_TAGS = new Set(["caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr"]);
+
+function modeInCell(self, token) {
+  if (token instanceof CharacterToken) {
+    const previous = self.insert_from_table;
+    self.insert_from_table = false;
+    try {
+      return modeInBody(self, token);
+    } finally {
+      self.insert_from_table = previous;
+    }
+  }
+  if (token instanceof CommentToken) {
+    self._append_comment(token.data);
+    return null;
+  }
+
+  if (token instanceof Tag) {
+    const name = token.name;
+    if (token.kind === Tag.START) {
+      if (CELL_STRUCTURE_TAGS.has(name)) {
+        if (self._close_table_cell()) return ["reprocess", self.mode, token];
+        self._parse_error("unexpected-start-tag-in-cell-fragment", name);
+        return null;
+      }
+      const previous = self.insert_from_table;
+      self.insert_from_table = false;
+      try {
+        return modeInBody(self, token);
+      } finally {
+        self.insert_from_table = previous;
+      }
+    }
+
+    if (name === "td" || name === "th") {
+      if (!self._has_in_table_scope(name)) {
+        self._parse_error("unexpected-end-tag", name);
+        return null;
+      }
+      self._end_table_cell(name);
+      return null;
+    }
+
+    if (name === "table" || name === "tbody" || name === "tfoot" || name === "thead" || name === "tr") {
+      if (!self._has_in_table_scope(name)) {
+        self._parse_error("unexpected-end-tag", name);
+        return null;
+      }
+      self._close_table_cell();
+      return ["reprocess", self.mode, token];
+    }
+
+    const previous = self.insert_from_table;
+    self.insert_from_table = false;
+    try {
+      return modeInBody(self, token);
+    } finally {
+      self.insert_from_table = previous;
+    }
+  }
+
+  if (token instanceof EOFToken) {
+    if (self._close_table_cell()) return ["reprocess", self.mode, token];
+    return modeInTable(self, token);
+  }
+  return null;
+}
+
+function modeInFrameset(self, token) {
+  if (token instanceof CharacterToken) {
+    const data = token.data || "";
+    let whitespace = "";
+    for (const ch of data) {
+      if (ch === "\t" || ch === "\n" || ch === "\f" || ch === "\r" || ch === " ") whitespace += ch;
+    }
+    if (whitespace) self._append_text(whitespace);
+    return null;
+  }
+
+  if (token instanceof CommentToken) {
+    self._append_comment(token.data);
+    return null;
+  }
+
+  if (token instanceof Tag) {
+    if (token.kind === Tag.START && token.name === "html") return ["reprocess", InsertionMode.IN_BODY, token];
+    if (token.kind === Tag.START && token.name === "frameset") {
+      self._insert_element(token, { push: true });
+      return null;
+    }
+    if (token.kind === Tag.END && token.name === "frameset") {
+      if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "html") {
+        self._parse_error("unexpected-end-tag", token.name);
+        return null;
+      }
+      self.open_elements.pop();
+      if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name !== "frameset") {
+        self.mode = InsertionMode.AFTER_FRAMESET;
+      }
+      return null;
+    }
+    if (token.kind === Tag.START && token.name === "frame") {
+      self._insert_element(token, { push: true });
+      self.open_elements.pop();
+      return null;
+    }
+    if (token.kind === Tag.START && token.name === "noframes") {
+      self._insert_element(token, { push: true });
+      self.original_mode = self.mode;
+      self.mode = InsertionMode.TEXT;
+      return null;
+    }
+  }
+
+  if (token instanceof EOFToken) {
+    if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name !== "html") {
+      self._parse_error("expected-closing-tag-but-got-eof", self.open_elements[self.open_elements.length - 1].name);
+    }
+    return null;
+  }
+
+  self._parse_error("unexpected-token-in-frameset");
+  return null;
+}
+
+function modeAfterFrameset(self, token) {
+  if (token instanceof CharacterToken) {
+    const data = token.data || "";
+    let whitespace = "";
+    for (const ch of data) {
+      if (ch === "\t" || ch === "\n" || ch === "\f" || ch === "\r" || ch === " ") whitespace += ch;
+    }
+    if (whitespace) self._append_text(whitespace);
+    return null;
+  }
+  if (token instanceof CommentToken) {
+    self._append_comment(token.data);
+    return null;
+  }
+  if (token instanceof Tag) {
+    if (token.kind === Tag.START && token.name === "html") return ["reprocess", InsertionMode.IN_BODY, token];
+    if (token.kind === Tag.END && token.name === "html") {
+      self.mode = InsertionMode.AFTER_AFTER_FRAMESET;
+      return null;
+    }
+    if (token.kind === Tag.START && token.name === "noframes") {
+      self._insert_element(token, { push: true });
+      self.original_mode = self.mode;
+      self.mode = InsertionMode.TEXT;
+      return null;
+    }
+  }
+  if (token instanceof EOFToken) return null;
+
+  self._parse_error("unexpected-token-after-frameset");
+  self.mode = InsertionMode.IN_FRAMESET;
+  return ["reprocess", InsertionMode.IN_FRAMESET, token];
+}
+
+function modeAfterAfterFrameset(self, token) {
+  if (token instanceof CharacterToken) {
+    if (isAllWhitespace(token.data)) {
+      modeInBody(self, token);
+      return null;
+    }
+  }
+  if (token instanceof CommentToken) {
+    self._append_comment_to_document(token.data);
+    return null;
+  }
+  if (token instanceof Tag) {
+    if (token.kind === Tag.START && token.name === "html") return ["reprocess", InsertionMode.IN_BODY, token];
+    if (token.kind === Tag.START && token.name === "noframes") {
+      self._insert_element(token, { push: true });
+      self.original_mode = self.mode;
+      self.mode = InsertionMode.TEXT;
+      return null;
+    }
+  }
+  if (token instanceof EOFToken) return null;
+
+  self._parse_error("unexpected-token-after-after-frameset");
+  self.mode = InsertionMode.IN_FRAMESET;
+  return ["reprocess", InsertionMode.IN_FRAMESET, token];
+}
+
+const SELECT_END_TAG_TABLE_ELEMENTS = new Set(["caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr", "table"]);
+const SELECT_ALLOWED_ELEMENTS = new Set(["p", "div", "span", "button", "datalist", "selectedcontent"]);
+const SELECT_HEAD_TAGS = new Set([
+  "base",
+  "basefont",
+  "bgsound",
+  "link",
+  "meta",
+  "noframes",
+  "script",
+  "style",
+  "template",
+  "title",
+]);
+
+function modeInSelect(self, token) {
+  if (token instanceof CharacterToken) {
+    let data = token.data || "";
+    if (data.includes("\x00")) {
+      self._parse_error("invalid-codepoint-in-select");
+      data = data.replaceAll("\x00", "");
+    }
+    if (data.includes("\x0c")) {
+      self._parse_error("invalid-codepoint-in-select");
+      data = data.replaceAll("\x0c", "");
+    }
+    if (data) {
+      self._reconstruct_active_formatting_elements();
+      self._append_text(data);
+    }
+    return null;
+  }
+
+  if (token instanceof CommentToken) {
+    self._append_comment(token.data);
+    return null;
+  }
+
+  if (token instanceof Tag) {
+    const name = token.name;
+    if (token.kind === Tag.START) {
+      if (name === "html") return ["reprocess", InsertionMode.IN_BODY, token];
+      if (name === "option") {
+        if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
+          self.open_elements.pop();
+        }
+        self._reconstruct_active_formatting_elements();
+        self._insert_element(token, { push: true });
+        return null;
+      }
+      if (name === "optgroup") {
+        if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
+          self.open_elements.pop();
+        }
+        if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "optgroup") {
+          self.open_elements.pop();
+        }
+        self._reconstruct_active_formatting_elements();
+        self._insert_element(token, { push: true });
+        return null;
+      }
+      if (name === "select") {
+        self._parse_error("unexpected-start-tag-implies-end-tag", name);
+        self._pop_until_any_inclusive(new Set(["select"]));
+        self._reset_insertion_mode();
+        return null;
+      }
+      if (name === "input" || name === "textarea") {
+        self._parse_error("unexpected-start-tag-implies-end-tag", name);
+        self._pop_until_any_inclusive(new Set(["select"]));
+        self._reset_insertion_mode();
+        return ["reprocess", self.mode, token];
+      }
+      if (name === "keygen") {
+        self._reconstruct_active_formatting_elements();
+        self._insert_element(token, { push: false });
+        return null;
+      }
+      if (SELECT_END_TAG_TABLE_ELEMENTS.has(name)) {
+        self._parse_error("unexpected-start-tag-implies-end-tag", name);
+        self._pop_until_any_inclusive(new Set(["select"]));
+        self._reset_insertion_mode();
+        return ["reprocess", self.mode, token];
+      }
+      if (name === "script" || name === "template") return modeInHead(self, token);
+      if (name === "svg" || name === "math") {
+        self._reconstruct_active_formatting_elements();
+        self._insert_element(token, { push: !token.selfClosing, namespace: name });
+        return null;
+      }
+      if (FORMATTING_ELEMENTS.has(name)) {
+        self._reconstruct_active_formatting_elements();
+        const node = self._insert_element(token, { push: true });
+        self._append_active_formatting_entry(name, token.attrs, node);
+        return null;
+      }
+      if (name === "hr") {
+        if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
+          self.open_elements.pop();
+        }
+        if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "optgroup") {
+          self.open_elements.pop();
+        }
+        self._reconstruct_active_formatting_elements();
+        self._insert_element(token, { push: false });
+        return null;
+      }
+      if (name === "menuitem") {
+        self._reconstruct_active_formatting_elements();
+        self._insert_element(token, { push: true });
+        return null;
+      }
+      if (SELECT_ALLOWED_ELEMENTS.has(name)) {
+        self._reconstruct_active_formatting_elements();
+        self._insert_element(token, { push: !token.selfClosing });
+        return null;
+      }
+      if (name === "br" || name === "img") {
+        self._reconstruct_active_formatting_elements();
+        self._insert_element(token, { push: false });
+        return null;
+      }
+      if (name === "plaintext") {
+        self._reconstruct_active_formatting_elements();
+        self._insert_element(token, { push: true });
+        return null;
+      }
+      return null;
+    }
+
+    // End tag.
+    if (name === "optgroup") {
+      if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
+        self.open_elements.pop();
+      }
+      if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "optgroup") {
+        self.open_elements.pop();
+      } else {
+        self._parse_error("unexpected-end-tag", name);
+      }
+      return null;
+    }
+    if (name === "option") {
+      if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
+        self.open_elements.pop();
+      } else {
+        self._parse_error("unexpected-end-tag", name);
+      }
+      return null;
+    }
+    if (name === "select") {
+      self._pop_until_any_inclusive(new Set(["select"]));
+      self._reset_insertion_mode();
+      return null;
+    }
+
+    if (name === "a" || FORMATTING_ELEMENTS.has(name)) {
+      const selectNode = self._find_last_on_stack("select");
+      const fmtIndex = self._find_active_formatting_index(name);
+      if (fmtIndex != null) {
+        const target = self.active_formatting[fmtIndex].node;
+        if (target && self.open_elements.includes(target) && selectNode) {
+          const selectIndex = self.open_elements.indexOf(selectNode);
+          const targetIndex = self.open_elements.indexOf(target);
+          if (targetIndex < selectIndex) {
+            self._parse_error("unexpected-end-tag", name);
+            return null;
+          }
+        }
+      }
+      self._adoption_agency(name);
+      return null;
+    }
+
+    if (SELECT_ALLOWED_ELEMENTS.has(name)) {
+      let selectIdx = null;
+      let targetIdx = null;
+      for (let i = 0; i < self.open_elements.length; i += 1) {
+        const node = self.open_elements[i];
+        if (node.name === "select" && selectIdx == null) selectIdx = i;
+        if (node.name === name) targetIdx = i;
+      }
+      if (targetIdx != null && (selectIdx == null || targetIdx > selectIdx)) {
+        while (self.open_elements.length) {
+          const popped = self.open_elements.pop();
+          if (popped.name === name) break;
+        }
+      } else {
+        self._parse_error("unexpected-end-tag", name);
+      }
+      return null;
+    }
+
+    if (SELECT_END_TAG_TABLE_ELEMENTS.has(name)) {
+      self._parse_error("unexpected-end-tag", name);
+      self._pop_until_any_inclusive(new Set(["select"]));
+      self._reset_insertion_mode();
+      return ["reprocess", self.mode, token];
+    }
+
+    self._parse_error("unexpected-end-tag", name);
+    return null;
+  }
+
+  if (token instanceof EOFToken) return modeInBody(self, token);
+  return null;
+}
+
+function modeInTemplate(self, token) {
+  if (token instanceof CharacterToken) return modeInBody(self, token);
+  if (token instanceof CommentToken) return modeInBody(self, token);
+
+  if (token instanceof Tag) {
+    if (token.kind === Tag.START) {
+      if (token.name === "caption" || token.name === "colgroup" || token.name === "tbody" || token.name === "tfoot" || token.name === "thead") {
+        self.template_modes.pop();
+        self.template_modes.push(InsertionMode.IN_TABLE);
+        self.mode = InsertionMode.IN_TABLE;
+        return ["reprocess", InsertionMode.IN_TABLE, token];
+      }
+      if (token.name === "col") {
+        self.template_modes.pop();
+        self.template_modes.push(InsertionMode.IN_COLUMN_GROUP);
+        self.mode = InsertionMode.IN_COLUMN_GROUP;
+        return ["reprocess", InsertionMode.IN_COLUMN_GROUP, token];
+      }
+      if (token.name === "tr") {
+        self.template_modes.pop();
+        self.template_modes.push(InsertionMode.IN_TABLE_BODY);
+        self.mode = InsertionMode.IN_TABLE_BODY;
+        return ["reprocess", InsertionMode.IN_TABLE_BODY, token];
+      }
+      if (token.name === "td" || token.name === "th") {
+        self.template_modes.pop();
+        self.template_modes.push(InsertionMode.IN_ROW);
+        self.mode = InsertionMode.IN_ROW;
+        return ["reprocess", InsertionMode.IN_ROW, token];
+      }
+
+      if (!SELECT_HEAD_TAGS.has(token.name)) {
+        self.template_modes.pop();
+        self.template_modes.push(InsertionMode.IN_BODY);
+        self.mode = InsertionMode.IN_BODY;
+        return ["reprocess", InsertionMode.IN_BODY, token];
+      }
+    }
+
+    if (token.kind === Tag.END && token.name === "template") return modeInHead(self, token);
+
+    if (SELECT_HEAD_TAGS.has(token.name)) return modeInHead(self, token);
+  }
+
+  if (token instanceof EOFToken) {
+    const hasTemplate = self.open_elements.some((node) => node.name === "template");
+    if (!hasTemplate) return null;
+    self._parse_error("expected-closing-tag-but-got-eof", "template");
+    self._pop_until_inclusive("template");
+    self._clear_active_formatting_up_to_marker();
+    self.template_modes.pop();
+    self._reset_insertion_mode();
+    return ["reprocess", self.mode, token];
+  }
+
+  return null;
+}
+
+// Placeholder for any unported modes.
 function modeFallbackToBody(self, token) {
   self.mode = InsertionMode.IN_BODY;
   return ["reprocess", InsertionMode.IN_BODY, token];
@@ -1114,18 +2120,18 @@ const MODE_HANDLERS = [
   modeInBody,
   modeAfterBody,
   modeAfterAfterBody,
-  modeFallbackToBody, // IN_TABLE
-  modeFallbackToBody, // IN_TABLE_TEXT
-  modeFallbackToBody, // IN_CAPTION
-  modeFallbackToBody, // IN_COLUMN_GROUP
-  modeFallbackToBody, // IN_TABLE_BODY
-  modeFallbackToBody, // IN_ROW
-  modeFallbackToBody, // IN_CELL
-  modeFallbackToBody, // IN_FRAMESET
-  modeFallbackToBody, // AFTER_FRAMESET
-  modeFallbackToBody, // AFTER_AFTER_FRAMESET
-  modeFallbackToBody, // IN_SELECT
-  modeFallbackToBody, // IN_TEMPLATE
+  modeInTable,
+  modeInTableText,
+  modeInCaption,
+  modeInColumnGroup,
+  modeInTableBody,
+  modeInRow,
+  modeInCell,
+  modeInFrameset,
+  modeAfterFrameset,
+  modeAfterAfterFrameset,
+  modeInSelect,
+  modeInTemplate,
 ];
 
 export class TreeBuilder {
@@ -1876,6 +2882,30 @@ export class TreeBuilder {
     }
     this._clear_active_formatting_up_to_marker();
     this.mode = InsertionMode.IN_ROW;
+  }
+
+  _close_caption_element() {
+    if (!this._has_in_table_scope("caption")) {
+      this._parse_error("unexpected-end-tag", "caption");
+      return false;
+    }
+    this._generate_implied_end_tags();
+    while (this.open_elements.length) {
+      const node = this.open_elements.pop();
+      if (node.name === "caption") break;
+    }
+    this._clear_active_formatting_up_to_marker();
+    this.mode = InsertionMode.IN_TABLE;
+    return true;
+  }
+
+  _end_tr_element() {
+    this._clear_stack_until(TABLE_ROW_CONTEXT_CLEAR_UNTIL);
+    if (this.open_elements.length && this.open_elements[this.open_elements.length - 1].name === "tr") {
+      this.open_elements.pop();
+    }
+    if (this.template_modes.length) this.mode = this.template_modes[this.template_modes.length - 1];
+    else this.mode = InsertionMode.IN_TABLE_BODY;
   }
 
   _flush_pending_table_text() {
