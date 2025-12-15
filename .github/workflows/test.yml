@@ -13,4 +13,8 @@ jobs:
         with:
           node-version: "20"
       - run: node scripts/smoke.js
-
+      - uses: actions/checkout@v4
+        with:
+          repository: html5lib/html5lib-tests
+          path: tests/html5lib-tests
+      - run: node scripts/run-encoding-tests.js
