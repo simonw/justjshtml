@@ -16,6 +16,41 @@ function asciiLower(c) {
   return c;
 }
 
+function coerceTextForXML(text) {
+  if (!text) return text;
+
+  let changed = false;
+  let out = "";
+  for (const ch of text) {
+    const cp = ch.codePointAt(0);
+    if (cp === 0x0c) {
+      out += " ";
+      changed = true;
+      continue;
+    }
+    if (cp >= 0xfdd0 && cp <= 0xfdef) {
+      out += "\ufffd";
+      changed = true;
+      continue;
+    }
+    const low16 = cp & 0xffff;
+    if (low16 === 0xfffe || low16 === 0xffff) {
+      out += "\ufffd";
+      changed = true;
+      continue;
+    }
+    out += ch;
+  }
+
+  return changed ? out : text;
+}
+
+function coerceCommentForXML(text) {
+  if (!text) return text;
+  if (!text.includes("--")) return text;
+  return text.replaceAll("--", "- -");
+}
+
 export class TokenizerOpts {
   constructor({ initialState = null, initialRawtextTag = null, discardBom = true, xmlCoercion = false } = {}) {
     this.initialState = initialState;
@@ -299,10 +334,16 @@ export class Tokenizer {
     let data = this.textBuffer.join("");
     this.textBuffer.length = 0;
 
-    // Decode character references in DATA and RCDATA.
-    if (this.state === Tokenizer.DATA || this.state === Tokenizer.RCDATA) {
+    // Per HTML5 spec (and Python port):
+    // - decode character references in DATA/RCDATA and similar (< RAWTEXT)
+    // - do not decode in RAWTEXT/PLAINTEXT/script states or CDATA
+    const state = this.state;
+    const inCDATA = state >= Tokenizer.CDATA_SECTION && state <= Tokenizer.CDATA_SECTION_END;
+    if (!inCDATA && state < Tokenizer.RAWTEXT && state < Tokenizer.PLAINTEXT) {
       if (data.includes("&")) data = decodeEntitiesInText(data);
     }
+
+    if (this.opts.xmlCoercion) data = coerceTextForXML(data);
 
     this.sink.processCharacters(data);
   }
@@ -370,8 +411,9 @@ export class Tokenizer {
   }
 
   _emitComment() {
-    const data = this.currentComment.join("");
+    let data = this.currentComment.join("");
     this.currentComment.length = 0;
+    if (this.opts.xmlCoercion) data = coerceCommentForXML(data);
     this._commentToken.data = data;
     this._emitToken(this._commentToken);
   }
@@ -442,6 +484,11 @@ export class Tokenizer {
       this._emitToken(new EOFToken());
       return true;
     }
+    if (c === "\0") {
+      this._emitError("unexpected-null-character");
+      this._appendText("\ufffd");
+      return false;
+    }
     this._appendText(c);
     return false;
   }
@@ -463,6 +510,14 @@ export class Tokenizer {
 
     if (c === "/") {
       this.state = Tokenizer.END_TAG_OPEN;
+      return false;
+    }
+
+    if (c === "?") {
+      this._emitError("unexpected-question-mark-instead-of-tag-name");
+      this.currentComment.length = 0;
+      this._reconsumeCurrent();
+      this.state = Tokenizer.BOGUS_COMMENT;
       return false;
     }
 
@@ -521,7 +576,6 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
-      this._emitCurrentTag();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -557,7 +611,6 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
-      this._emitCurrentTag();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -575,7 +628,13 @@ export class Tokenizer {
       return false;
     }
 
-    if (c === "=") this._emitError("unexpected-equals-sign-before-attribute-name");
+    if (c === "=") {
+      this._emitError("unexpected-equals-sign-before-attribute-name");
+      this._startNewAttribute();
+      this.currentAttrName.push("=");
+      this.state = Tokenizer.ATTRIBUTE_NAME;
+      return false;
+    }
 
     this._startNewAttribute();
     this._reconsumeCurrent();
@@ -586,8 +645,7 @@ export class Tokenizer {
   _stateAttributeName() {
     const c = this._getChar();
     if (c == null) {
-      this._finishAttribute();
-      this._emitCurrentTag();
+      this._emitError("eof-in-tag");
       this._emitToken(new EOFToken());
       return true;
     }
@@ -629,7 +687,7 @@ export class Tokenizer {
   _stateAfterAttributeName() {
     const c = this._getChar();
     if (c == null) {
-      this._emitCurrentTag();
+      this._emitError("eof-in-tag");
       this._emitToken(new EOFToken());
       return true;
     }
@@ -662,8 +720,6 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
-      this._finishAttribute();
-      this._emitCurrentTag();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -697,8 +753,6 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
-      this._finishAttribute();
-      this._emitCurrentTag();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -710,6 +764,11 @@ export class Tokenizer {
     }
 
     if (c === "&") this.currentAttrValueHasAmp = true;
+    if (c === "\0") {
+      this._emitError("unexpected-null-character");
+      this.currentAttrValue.push("\ufffd");
+      return false;
+    }
     this.currentAttrValue.push(c);
     return false;
   }
@@ -718,8 +777,6 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
-      this._finishAttribute();
-      this._emitCurrentTag();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -731,6 +788,11 @@ export class Tokenizer {
     }
 
     if (c === "&") this.currentAttrValueHasAmp = true;
+    if (c === "\0") {
+      this._emitError("unexpected-null-character");
+      this.currentAttrValue.push("\ufffd");
+      return false;
+    }
     this.currentAttrValue.push(c);
     return false;
   }
@@ -739,8 +801,6 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
-      this._finishAttribute();
-      this._emitCurrentTag();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -760,6 +820,11 @@ export class Tokenizer {
       return false;
     }
 
+    if (c === "\0") {
+      this._emitError("unexpected-null-character");
+      this.currentAttrValue.push("\ufffd");
+      return false;
+    }
     this.currentAttrValue.push(c);
     return false;
   }
@@ -767,7 +832,7 @@ export class Tokenizer {
   _stateAfterAttributeValueQuoted() {
     const c = this._getChar();
     if (c == null) {
-      this._emitCurrentTag();
+      this._emitError("eof-in-tag");
       this._emitToken(new EOFToken());
       return true;
     }
@@ -798,7 +863,6 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
-      this._emitCurrentTag();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -1582,4 +1646,3 @@ export class Tokenizer {
     }
   }
 }
-
