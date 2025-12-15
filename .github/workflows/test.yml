@@ -15,6 +15,7 @@ jobs:
       - run: node scripts/smoke.js
       - run: node scripts/run-selector-tests.js
       - run: node scripts/run-stream-tests.js
+      - run: node scripts/run-markdown-tests.js
       - uses: actions/checkout@v4
         with:
           repository: html5lib/html5lib-tests
