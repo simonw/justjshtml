@@ -158,6 +158,7 @@ export class Tokenizer {
     this.lastStartTagName = null;
     this.rawtextTagName = null;
     this.tempBuffer = [];
+    this.originalTagName = [];
 
     this._tagToken = new Tag(Tag.START, "", {}, false);
     this._commentToken = new CommentToken("");
@@ -192,6 +193,7 @@ export class Tokenizer {
 
     this.rawtextTagName = this.opts.initialRawtextTag;
     this.tempBuffer.length = 0;
+    this.originalTagName.length = 0;
     this.lastStartTagName = null;
 
     if (typeof this.opts.initialState === "number") this.state = this.opts.initialState;
@@ -282,8 +284,54 @@ export class Tokenizer {
         return this._stateDoctypeSystemIdentifierSingleQuoted();
       case Tokenizer.AFTER_DOCTYPE_SYSTEM_IDENTIFIER:
         return this._stateAfterDoctypeSystemIdentifier();
+      case Tokenizer.CDATA_SECTION:
+        return this._stateCdataSection();
+      case Tokenizer.CDATA_SECTION_BRACKET:
+        return this._stateCdataSectionBracket();
+      case Tokenizer.CDATA_SECTION_END:
+        return this._stateCdataSectionEnd();
+      case Tokenizer.RCDATA:
+        return this._stateRcdata();
+      case Tokenizer.RCDATA_LESS_THAN_SIGN:
+        return this._stateRcdataLessThanSign();
+      case Tokenizer.RCDATA_END_TAG_OPEN:
+        return this._stateRcdataEndTagOpen();
+      case Tokenizer.RCDATA_END_TAG_NAME:
+        return this._stateRcdataEndTagName();
+      case Tokenizer.RAWTEXT:
+        return this._stateRawtext();
+      case Tokenizer.RAWTEXT_LESS_THAN_SIGN:
+        return this._stateRawtextLessThanSign();
+      case Tokenizer.RAWTEXT_END_TAG_OPEN:
+        return this._stateRawtextEndTagOpen();
+      case Tokenizer.RAWTEXT_END_TAG_NAME:
+        return this._stateRawtextEndTagName();
       case Tokenizer.PLAINTEXT:
         return this._statePlaintext();
+      case Tokenizer.SCRIPT_DATA_ESCAPED:
+        return this._stateScriptDataEscaped();
+      case Tokenizer.SCRIPT_DATA_ESCAPED_DASH:
+        return this._stateScriptDataEscapedDash();
+      case Tokenizer.SCRIPT_DATA_ESCAPED_DASH_DASH:
+        return this._stateScriptDataEscapedDashDash();
+      case Tokenizer.SCRIPT_DATA_ESCAPED_LESS_THAN_SIGN:
+        return this._stateScriptDataEscapedLessThanSign();
+      case Tokenizer.SCRIPT_DATA_ESCAPED_END_TAG_OPEN:
+        return this._stateScriptDataEscapedEndTagOpen();
+      case Tokenizer.SCRIPT_DATA_ESCAPED_END_TAG_NAME:
+        return this._stateScriptDataEscapedEndTagName();
+      case Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPE_START:
+        return this._stateScriptDataDoubleEscapeStart();
+      case Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED:
+        return this._stateScriptDataDoubleEscaped();
+      case Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED_DASH:
+        return this._stateScriptDataDoubleEscapedDash();
+      case Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED_DASH_DASH:
+        return this._stateScriptDataDoubleEscapedDashDash();
+      case Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED_LESS_THAN_SIGN:
+        return this._stateScriptDataDoubleEscapedLessThanSign();
+      case Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPE_END:
+        return this._stateScriptDataDoubleEscapeEnd();
       default:
         // Not yet ported; fall back to DATA semantics to keep the runner usable.
         this.state = Tokenizer.DATA;
@@ -323,6 +371,12 @@ export class Tokenizer {
 
   _reconsumeCurrent() {
     this.reconsume = true;
+  }
+
+  _peekChar(offset) {
+    const pos = this.pos + offset;
+    if (pos < 0 || pos >= this.length) return null;
+    return this.buffer[pos];
   }
 
   _appendText(s) {
@@ -611,6 +665,7 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
+      this._flushText();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -646,6 +701,7 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
+      this._flushText();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -688,6 +744,7 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
+      this._flushText();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -720,6 +777,7 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
+      this._flushText();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -753,6 +811,7 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
+      this._flushText();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -777,6 +836,7 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
+      this._flushText();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -801,6 +861,7 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
+      this._flushText();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -833,6 +894,7 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
+      this._flushText();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -863,6 +925,7 @@ export class Tokenizer {
     const c = this._getChar();
     if (c == null) {
       this._emitError("eof-in-tag");
+      this._flushText();
       this._emitToken(new EOFToken());
       return true;
     }
@@ -1644,5 +1707,606 @@ export class Tokenizer {
         return false;
       }
     }
+  }
+
+  _stateCdataSection() {
+    // Consume characters until we see ']'.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const c = this._getChar();
+      if (c == null) {
+        this._emitError("eof-in-cdata");
+        this._flushText();
+        this._emitToken(new EOFToken());
+        return true;
+      }
+      if (c === "]") {
+        this.state = Tokenizer.CDATA_SECTION_BRACKET;
+        return false;
+      }
+      this._appendText(c);
+    }
+  }
+
+  _stateCdataSectionBracket() {
+    const c = this._getChar();
+    if (c === "]") {
+      this.state = Tokenizer.CDATA_SECTION_END;
+      return false;
+    }
+
+    this._appendText("]");
+    if (c == null) {
+      this._emitError("eof-in-cdata");
+      this._flushText();
+      this._emitToken(new EOFToken());
+      return true;
+    }
+    this._reconsumeCurrent();
+    this.state = Tokenizer.CDATA_SECTION;
+    return false;
+  }
+
+  _stateCdataSectionEnd() {
+    const c = this._getChar();
+    if (c === ">") {
+      this._flushText();
+      this.state = Tokenizer.DATA;
+      return false;
+    }
+
+    this._appendText("]");
+    if (c == null) {
+      this._appendText("]");
+      this._emitError("eof-in-cdata");
+      this._flushText();
+      this._emitToken(new EOFToken());
+      return true;
+    }
+    if (c === "]") {
+      return false;
+    }
+    this._appendText("]");
+    this._reconsumeCurrent();
+    this.state = Tokenizer.CDATA_SECTION;
+    return false;
+  }
+
+  _stateRcdata() {
+    const c = this._getChar();
+    if (c == null) {
+      this._flushText();
+      this._emitToken(new EOFToken());
+      return true;
+    }
+    if (c === "<") {
+      this.state = Tokenizer.RCDATA_LESS_THAN_SIGN;
+      return false;
+    }
+    if (c === "&") {
+      this._appendText("&");
+      return false;
+    }
+    if (c === "\0") {
+      this._emitError("unexpected-null-character");
+      this._appendText("\ufffd");
+      return false;
+    }
+    this._appendText(c);
+    return false;
+  }
+
+  _stateRcdataLessThanSign() {
+    const c = this._getChar();
+    if (c === "/") {
+      this.currentTagName.length = 0;
+      this.originalTagName.length = 0;
+      this.state = Tokenizer.RCDATA_END_TAG_OPEN;
+      return false;
+    }
+    this._appendText("<");
+    this._reconsumeCurrent();
+    this.state = Tokenizer.RCDATA;
+    return false;
+  }
+
+  _stateRcdataEndTagOpen() {
+    const c = this._getChar();
+    if (c != null && isAsciiAlpha(c)) {
+      this.currentTagName.push(asciiLower(c));
+      this.originalTagName.push(c);
+      this.state = Tokenizer.RCDATA_END_TAG_NAME;
+      return false;
+    }
+    this.textBuffer.push("<", "/");
+    this._reconsumeCurrent();
+    this.state = Tokenizer.RCDATA;
+    return false;
+  }
+
+  _stateRcdataEndTagName() {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const c = this._getChar();
+      if (c != null && isAsciiAlpha(c)) {
+        this.currentTagName.push(asciiLower(c));
+        this.originalTagName.push(c);
+        continue;
+      }
+
+      const tagName = this.currentTagName.join("");
+      if (tagName === this.rawtextTagName) {
+        if (c === ">") {
+          this._flushText();
+          this._emitToken(new Tag(Tag.END, tagName, {}, false));
+          this.state = Tokenizer.DATA;
+          this.rawtextTagName = null;
+          this.currentTagName.length = 0;
+          this.originalTagName.length = 0;
+          return false;
+        }
+        if (isWhitespace(c)) {
+          this._flushText();
+          this.currentTagKind = Tag.END;
+          this.currentTagAttrs = {};
+          this.state = Tokenizer.BEFORE_ATTRIBUTE_NAME;
+          return false;
+        }
+        if (c === "/") {
+          this._flushText();
+          this.currentTagKind = Tag.END;
+          this.currentTagAttrs = {};
+          this.state = Tokenizer.SELF_CLOSING_START_TAG;
+          return false;
+        }
+      }
+
+      if (c == null) {
+        this.textBuffer.push("<", "/");
+        for (const ch of this.originalTagName) this._appendText(ch);
+        this.currentTagName.length = 0;
+        this.originalTagName.length = 0;
+        this._flushText();
+        this._emitToken(new EOFToken());
+        return true;
+      }
+
+      this.textBuffer.push("<", "/");
+      for (const ch of this.originalTagName) this._appendText(ch);
+      this.currentTagName.length = 0;
+      this.originalTagName.length = 0;
+      this._reconsumeCurrent();
+      this.state = Tokenizer.RCDATA;
+      return false;
+    }
+  }
+
+  _stateRawtext() {
+    const c = this._getChar();
+    if (c == null) {
+      this._flushText();
+      this._emitToken(new EOFToken());
+      return true;
+    }
+    if (c === "\0") {
+      this._emitError("unexpected-null-character");
+      this._appendText("\ufffd");
+      return false;
+    }
+    if (c === "<") {
+      if (this.rawtextTagName === "script") {
+        const next1 = this._peekChar(0);
+        const next2 = this._peekChar(1);
+        const next3 = this._peekChar(2);
+        if (next1 === "!" && next2 === "-" && next3 === "-") {
+          this.textBuffer.push("<", "!", "-", "-");
+          this._getChar();
+          this._getChar();
+          this._getChar();
+          this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+          return false;
+        }
+      }
+      this.state = Tokenizer.RAWTEXT_LESS_THAN_SIGN;
+      return false;
+    }
+    this._appendText(c);
+    return false;
+  }
+
+  _stateRawtextLessThanSign() {
+    const c = this._getChar();
+    if (c === "/") {
+      this.currentTagName.length = 0;
+      this.originalTagName.length = 0;
+      this.state = Tokenizer.RAWTEXT_END_TAG_OPEN;
+      return false;
+    }
+    this._appendText("<");
+    this._reconsumeCurrent();
+    this.state = Tokenizer.RAWTEXT;
+    return false;
+  }
+
+  _stateRawtextEndTagOpen() {
+    const c = this._getChar();
+    if (c != null && isAsciiAlpha(c)) {
+      this.currentTagName.push(asciiLower(c));
+      this.originalTagName.push(c);
+      this.state = Tokenizer.RAWTEXT_END_TAG_NAME;
+      return false;
+    }
+    this.textBuffer.push("<", "/");
+    this._reconsumeCurrent();
+    this.state = Tokenizer.RAWTEXT;
+    return false;
+  }
+
+  _stateRawtextEndTagName() {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const c = this._getChar();
+      if (c != null && isAsciiAlpha(c)) {
+        this.currentTagName.push(asciiLower(c));
+        this.originalTagName.push(c);
+        continue;
+      }
+
+      const tagName = this.currentTagName.join("");
+      if (tagName === this.rawtextTagName) {
+        if (c === ">") {
+          this._flushText();
+          this._emitToken(new Tag(Tag.END, tagName, {}, false));
+          this.state = Tokenizer.DATA;
+          this.rawtextTagName = null;
+          this.currentTagName.length = 0;
+          this.originalTagName.length = 0;
+          return false;
+        }
+        if (isWhitespace(c)) {
+          this._flushText();
+          this.currentTagKind = Tag.END;
+          this.currentTagAttrs = {};
+          this.state = Tokenizer.BEFORE_ATTRIBUTE_NAME;
+          return false;
+        }
+        if (c === "/") {
+          this._flushText();
+          this.currentTagKind = Tag.END;
+          this.currentTagAttrs = {};
+          this.state = Tokenizer.SELF_CLOSING_START_TAG;
+          return false;
+        }
+      }
+
+      if (c == null) {
+        this.textBuffer.push("<", "/");
+        for (const ch of this.originalTagName) this._appendText(ch);
+        this.currentTagName.length = 0;
+        this.originalTagName.length = 0;
+        this._flushText();
+        this._emitToken(new EOFToken());
+        return true;
+      }
+
+      this.textBuffer.push("<", "/");
+      for (const ch of this.originalTagName) this._appendText(ch);
+      this.currentTagName.length = 0;
+      this.originalTagName.length = 0;
+      this._reconsumeCurrent();
+      this.state = Tokenizer.RAWTEXT;
+      return false;
+    }
+  }
+
+  _stateScriptDataEscaped() {
+    const c = this._getChar();
+    if (c == null) {
+      this._flushText();
+      this._emitToken(new EOFToken());
+      return true;
+    }
+    if (c === "-") {
+      this._appendText("-");
+      this.state = Tokenizer.SCRIPT_DATA_ESCAPED_DASH;
+      return false;
+    }
+    if (c === "<") {
+      this.state = Tokenizer.SCRIPT_DATA_ESCAPED_LESS_THAN_SIGN;
+      return false;
+    }
+    if (c === "\0") {
+      this._emitError("unexpected-null-character");
+      this._appendText("\ufffd");
+      return false;
+    }
+    this._appendText(c);
+    return false;
+  }
+
+  _stateScriptDataEscapedDash() {
+    const c = this._getChar();
+    if (c == null) {
+      this._flushText();
+      this._emitToken(new EOFToken());
+      return true;
+    }
+    if (c === "-") {
+      this._appendText("-");
+      this.state = Tokenizer.SCRIPT_DATA_ESCAPED_DASH_DASH;
+      return false;
+    }
+    if (c === "<") {
+      this.state = Tokenizer.SCRIPT_DATA_ESCAPED_LESS_THAN_SIGN;
+      return false;
+    }
+    if (c === "\0") {
+      this._emitError("unexpected-null-character");
+      this._appendText("\ufffd");
+      this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+      return false;
+    }
+    this._appendText(c);
+    this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+    return false;
+  }
+
+  _stateScriptDataEscapedDashDash() {
+    const c = this._getChar();
+    if (c == null) {
+      this._flushText();
+      this._emitToken(new EOFToken());
+      return true;
+    }
+    if (c === "-") {
+      this._appendText("-");
+      return false;
+    }
+    if (c === "<") {
+      this._appendText("<");
+      this.state = Tokenizer.SCRIPT_DATA_ESCAPED_LESS_THAN_SIGN;
+      return false;
+    }
+    if (c === ">") {
+      this._appendText(">");
+      this.state = Tokenizer.RAWTEXT;
+      return false;
+    }
+    if (c === "\0") {
+      this._emitError("unexpected-null-character");
+      this._appendText("\ufffd");
+      this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+      return false;
+    }
+    this._appendText(c);
+    this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+    return false;
+  }
+
+  _stateScriptDataEscapedLessThanSign() {
+    const c = this._getChar();
+    if (c === "/") {
+      this.tempBuffer.length = 0;
+      this.state = Tokenizer.SCRIPT_DATA_ESCAPED_END_TAG_OPEN;
+      return false;
+    }
+    if (c != null && isAsciiAlpha(c)) {
+      this.tempBuffer.length = 0;
+      this._appendText("<");
+      this._reconsumeCurrent();
+      this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPE_START;
+      return false;
+    }
+    this._appendText("<");
+    this._reconsumeCurrent();
+    this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+    return false;
+  }
+
+  _stateScriptDataEscapedEndTagOpen() {
+    const c = this._getChar();
+    if (c != null && isAsciiAlpha(c)) {
+      this.currentTagName.length = 0;
+      this.originalTagName.length = 0;
+      this._reconsumeCurrent();
+      this.state = Tokenizer.SCRIPT_DATA_ESCAPED_END_TAG_NAME;
+      return false;
+    }
+    this.textBuffer.push("<", "/");
+    this._reconsumeCurrent();
+    this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+    return false;
+  }
+
+  _stateScriptDataEscapedEndTagName() {
+    const c = this._getChar();
+    if (c != null && isAsciiAlpha(c)) {
+      this.currentTagName.push(asciiLower(c));
+      this.originalTagName.push(c);
+      this.tempBuffer.push(c);
+      return false;
+    }
+
+    const tagName = this.currentTagName.join("");
+    const isAppropriate = tagName === this.rawtextTagName;
+
+    if (isAppropriate) {
+      if (isWhitespace(c)) {
+        this._flushText();
+        this.currentTagKind = Tag.END;
+        this.currentTagAttrs = {};
+        this.state = Tokenizer.BEFORE_ATTRIBUTE_NAME;
+        return false;
+      }
+      if (c === "/") {
+        this._flushText();
+        this.currentTagKind = Tag.END;
+        this.currentTagAttrs = {};
+        this.state = Tokenizer.SELF_CLOSING_START_TAG;
+        return false;
+      }
+      if (c === ">") {
+        this._flushText();
+        this._emitToken(new Tag(Tag.END, tagName, {}, false));
+        this.state = Tokenizer.DATA;
+        this.rawtextTagName = null;
+        this.currentTagName.length = 0;
+        this.originalTagName.length = 0;
+        this.tempBuffer.length = 0;
+        return false;
+      }
+    }
+
+    this.textBuffer.push("<", "/");
+    for (const ch of this.tempBuffer) this._appendText(ch);
+    this.currentTagName.length = 0;
+    this.originalTagName.length = 0;
+    this.tempBuffer.length = 0;
+    this._reconsumeCurrent();
+    this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+    return false;
+  }
+
+  _stateScriptDataDoubleEscapeStart() {
+    const c = this._getChar();
+    if (c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f" || c === "/" || c === ">") {
+      const temp = this.tempBuffer.join("").toLowerCase();
+      if (temp === "script") this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED;
+      else this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+      this._appendText(c);
+      return false;
+    }
+    if (c != null && isAsciiAlpha(c)) {
+      this.tempBuffer.push(c);
+      this._appendText(c);
+      return false;
+    }
+    this._reconsumeCurrent();
+    this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+    return false;
+  }
+
+  _stateScriptDataDoubleEscaped() {
+    const c = this._getChar();
+    if (c == null) {
+      this._flushText();
+      this._emitToken(new EOFToken());
+      return true;
+    }
+    if (c === "-") {
+      this._appendText("-");
+      this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED_DASH;
+      return false;
+    }
+    if (c === "<") {
+      this._appendText("<");
+      this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED_LESS_THAN_SIGN;
+      return false;
+    }
+    if (c === "\0") {
+      this._emitError("unexpected-null-character");
+      this._appendText("\ufffd");
+      return false;
+    }
+    this._appendText(c);
+    return false;
+  }
+
+  _stateScriptDataDoubleEscapedDash() {
+    const c = this._getChar();
+    if (c == null) {
+      this._flushText();
+      this._emitToken(new EOFToken());
+      return true;
+    }
+    if (c === "-") {
+      this._appendText("-");
+      this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED_DASH_DASH;
+      return false;
+    }
+    if (c === "<") {
+      this._appendText("<");
+      this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED_LESS_THAN_SIGN;
+      return false;
+    }
+    if (c === "\0") {
+      this._emitError("unexpected-null-character");
+      this._appendText("\ufffd");
+      this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED;
+      return false;
+    }
+    this._appendText(c);
+    this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED;
+    return false;
+  }
+
+  _stateScriptDataDoubleEscapedDashDash() {
+    const c = this._getChar();
+    if (c == null) {
+      this._flushText();
+      this._emitToken(new EOFToken());
+      return true;
+    }
+    if (c === "-") {
+      this._appendText("-");
+      return false;
+    }
+    if (c === "<") {
+      this._appendText("<");
+      this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED_LESS_THAN_SIGN;
+      return false;
+    }
+    if (c === ">") {
+      this._appendText(">");
+      this.state = Tokenizer.RAWTEXT;
+      return false;
+    }
+    if (c === "\0") {
+      this._emitError("unexpected-null-character");
+      this._appendText("\ufffd");
+      this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED;
+      return false;
+    }
+    this._appendText(c);
+    this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED;
+    return false;
+  }
+
+  _stateScriptDataDoubleEscapedLessThanSign() {
+    const c = this._getChar();
+    if (c === "/") {
+      this.tempBuffer.length = 0;
+      this._appendText("/");
+      this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPE_END;
+      return false;
+    }
+    if (c != null && isAsciiAlpha(c)) {
+      this.tempBuffer.length = 0;
+      this._reconsumeCurrent();
+      this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPE_START;
+      return false;
+    }
+    this._reconsumeCurrent();
+    this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED;
+    return false;
+  }
+
+  _stateScriptDataDoubleEscapeEnd() {
+    const c = this._getChar();
+    if (c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f" || c === "/" || c === ">") {
+      const temp = this.tempBuffer.join("").toLowerCase();
+      if (temp === "script") this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+      else this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED;
+      this._appendText(c);
+      return false;
+    }
+    if (c != null && isAsciiAlpha(c)) {
+      this.tempBuffer.push(c);
+      this._appendText(c);
+      return false;
+    }
+    this._reconsumeCurrent();
+    this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED;
+    return false;
   }
 }
