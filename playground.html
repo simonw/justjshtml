@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JustJSHTML Playground - HTML5 Parser</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+        margin: 0;
+        padding: 20px;
+        background: #f5f5f5;
+        color: #333;
+        min-height: 100vh;
+      }
+
+      h1 {
+        text-align: center;
+        color: #2c3e50;
+        margin-bottom: 5px;
+      }
+
+      .subtitle {
+        text-align: center;
+        color: #666;
+        margin-bottom: 20px;
+      }
+
+      .subtitle a {
+        color: #3498db;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+
+      .status-bar {
+        background: #fff;
+        padding: 10px 15px;
+        border-radius: 8px;
+        margin-bottom: 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+
+      .status {
+        font-size: 14px;
+        padding: 4px 12px;
+        border-radius: 4px;
+        background: #f39c12;
+        color: #fff;
+      }
+
+      .status.ready {
+        background: #27ae60;
+      }
+
+      .status.error {
+        background: #e74c3c;
+      }
+
+      .input-section {
+        background: #fff;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 20px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+
+      .input-tabs {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 15px;
+      }
+
+      .tab-btn {
+        background: #3498db;
+        color: #fff;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: all 0.2s;
+      }
+
+      .tab-btn.active {
+        background: #2c3e50;
+        color: #fff;
+      }
+
+      .tab-btn:hover:not(.active) {
+        background: #2980b9;
+      }
+
+      .tab-content {
+        display: none;
+      }
+
+      .tab-content.active {
+        display: block;
+      }
+
+      .url-input-row {
+        display: flex;
+        gap: 10px;
+      }
+
+      .url-input-row input {
+        flex: 1;
+      }
+
+      input[type="text"],
+      input[type="url"] {
+        width: 100%;
+        padding: 12px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        font-size: 16px;
+      }
+
+      input:focus {
+        border-color: #3498db;
+        outline: none;
+        box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.2);
+      }
+
+      textarea {
+        width: 100%;
+        height: 200px;
+        padding: 12px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        font-family: "Fira Code", "Monaco", "Consolas", monospace;
+        font-size: 14px;
+        resize: vertical;
+        line-height: 1.5;
+      }
+
+      textarea:focus {
+        border-color: #3498db;
+        outline: none;
+        box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.2);
+      }
+
+      .mode-section {
+        background: #fff;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 20px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+
+      .mode-section h3 {
+        margin-top: 0;
+        margin-bottom: 15px;
+        color: #2c3e50;
+      }
+
+      .mode-tabs {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 15px;
+      }
+
+      .mode-btn {
+        background: #ecf0f1;
+        color: #2c3e50;
+        border: none;
+        padding: 10px 16px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: all 0.2s;
+      }
+
+      .mode-btn.active {
+        background: #9b59b6;
+        color: #fff;
+      }
+
+      .mode-btn:hover:not(.active) {
+        background: #dde4e6;
+      }
+
+      .mode-options {
+        display: none;
+        margin-bottom: 15px;
+      }
+
+      .mode-options.active {
+        display: block;
+      }
+
+      .mode-options label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: 500;
+        color: #555;
+      }
+
+      .selector-input {
+        display: flex;
+        gap: 10px;
+      }
+
+      .selector-input input {
+        flex: 1;
+      }
+
+      button {
+        background: #3498db;
+        color: #fff;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: background 0.2s;
+      }
+
+      button:hover {
+        background: #2980b9;
+      }
+
+      button:disabled {
+        background: #bdc3c7;
+        cursor: not-allowed;
+      }
+
+      .run-btn {
+        background: #27ae60;
+      }
+
+      .run-btn:hover {
+        background: #229954;
+      }
+
+      .output-section {
+        background: #fff;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+
+      .output-header {
+        background: #2c3e50;
+        color: #fff;
+        padding: 12px 20px;
+        font-weight: 600;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .output-content {
+        padding: 20px;
+        min-height: 200px;
+        max-height: 500px;
+        overflow: auto;
+        font-family: "Fira Code", "Monaco", "Consolas", monospace;
+        font-size: 14px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        background: #fafafa;
+      }
+
+      .output-content.error {
+        background: #fdf2f2;
+        color: #c0392b;
+      }
+
+      .examples-section {
+        background: #fff;
+        border-radius: 8px;
+        padding: 20px;
+        margin-top: 20px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+
+      .examples-section h3 {
+        margin-top: 0;
+        margin-bottom: 15px;
+        color: #2c3e50;
+      }
+
+      .example-buttons {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .example-btn {
+        background: #ecf0f1;
+        color: #2c3e50;
+      }
+
+      .example-btn:hover {
+        background: #dde4e6;
+      }
+
+      .info-box {
+        background: #e8f4fd;
+        border-left: 4px solid #3498db;
+        padding: 15px;
+        margin-top: 20px;
+        border-radius: 0 8px 8px 0;
+        font-size: 14px;
+      }
+
+      .info-box a {
+        color: #3498db;
+      }
+
+      .match-count {
+        background: #27ae60;
+        color: #fff;
+        padding: 4px 10px;
+        border-radius: 12px;
+        font-size: 12px;
+      }
+
+      @media (max-width: 600px) {
+        body {
+          padding: 10px;
+        }
+
+        .input-tabs,
+        .mode-tabs {
+          flex-direction: column;
+        }
+
+        .tab-btn,
+        .mode-btn {
+          width: 100%;
+        }
+
+        .url-input-row {
+          flex-direction: column;
+        }
+
+        .selector-input {
+          flex-direction: column;
+        }
+
+        .example-buttons {
+          flex-direction: column;
+        }
+
+        .example-btn {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>JustJSHTML Playground</h1>
+      <p class="subtitle">
+        A dependency-free JavaScript HTML5 parser -
+        <a href="https://github.com/simonw/justjshtml" target="_blank" rel="noreferrer">GitHub</a>
+      </p>
+
+      <div class="status-bar">
+        <span>JavaScript Environment</span>
+        <span id="status" class="status">Loading modules...</span>
+      </div>
+
+      <div class="input-section">
+        <div class="input-tabs">
+          <button class="tab-btn active" data-tab="paste">Paste HTML</button>
+          <button class="tab-btn" data-tab="url">Fetch from URL</button>
+        </div>
+
+        <div id="paste-tab" class="tab-content active">
+          <textarea id="html-input" placeholder="Paste your HTML here...">
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Example Page</title>
+</head>
+<body>
+    <header>
+        <nav>
+            <ul>
+                <li><a href="/" class="active">Home</a></li>
+                <li><a href="/about">About</a></li>
+                <li><a href="/contact">Contact</a></li>
+            </ul>
+        </nav>
+    </header>
+    <main>
+        <article>
+            <h1>Welcome to JustJSHTML</h1>
+            <p class="intro">A <strong>dependency-free</strong> HTML5 parser.</p>
+            <p>It aims to pass the full official html5lib test suite.</p>
+        </article>
+        <aside>
+            <h2>Features</h2>
+            <ul>
+                <li>CSS Selectors</li>
+                <li>Tree Traversal</li>
+                <li>Pretty Printing</li>
+            </ul>
+        </aside>
+    </main>
+    <footer>
+        <p>&copy; 2024 Example</p>
+    </footer>
+</body>
+</html></textarea
+          >
+        </div>
+
+        <div id="url-tab" class="tab-content">
+          <div class="url-input-row">
+            <input type="url" id="url-input" placeholder="https://example.com (must support CORS)" />
+            <button id="fetch-btn" disabled>Fetch</button>
+          </div>
+          <p style="font-size: 12px; color: #888; margin-top: 8px">
+            Note: The URL must support CORS. Try APIs or sites with permissive CORS headers.
+          </p>
+        </div>
+      </div>
+
+      <div class="mode-section">
+        <h3>Playground Mode</h3>
+        <div class="mode-tabs">
+          <button class="mode-btn active" data-mode="selector">CSS Selector Query</button>
+          <button class="mode-btn" data-mode="pretty">Pretty Print HTML</button>
+          <button class="mode-btn" data-mode="tree">Tree Structure</button>
+          <button class="mode-btn" data-mode="stream">Stream Events</button>
+          <button class="mode-btn" data-mode="text">Extract Text</button>
+          <button class="mode-btn" data-mode="markdown">To Markdown</button>
+        </div>
+
+        <div id="selector-options" class="mode-options active">
+          <label for="selector-input">CSS Selector:</label>
+          <div class="selector-input">
+            <input
+              type="text"
+              id="selector-input"
+              placeholder="e.g., p.intro, nav ul li a, h1, h2, h3"
+              value="p"
+            />
+            <button id="run-btn" class="run-btn" disabled>Run Query</button>
+          </div>
+        </div>
+
+        <div id="pretty-options" class="mode-options">
+          <button id="pretty-btn" class="run-btn" disabled>Pretty Print</button>
+        </div>
+
+        <div id="tree-options" class="mode-options">
+          <button id="tree-btn" class="run-btn" disabled>Show Tree</button>
+        </div>
+
+        <div id="stream-options" class="mode-options">
+          <button id="stream-btn" class="run-btn" disabled>Show Events</button>
+        </div>
+
+        <div id="text-options" class="mode-options">
+          <label for="text-selector-input">CSS Selector (optional - leave empty for whole document):</label>
+          <div class="selector-input">
+            <input type="text" id="text-selector-input" placeholder="e.g., article, main, .content (or leave empty)" />
+            <button id="text-btn" class="run-btn" disabled>Extract Text</button>
+          </div>
+        </div>
+
+        <div id="markdown-options" class="mode-options">
+          <label for="markdown-selector-input">CSS Selector (optional - leave empty for whole document):</label>
+          <div class="selector-input">
+            <input
+              type="text"
+              id="markdown-selector-input"
+              placeholder="e.g., article, main, .content (or leave empty)"
+            />
+            <button id="markdown-btn" class="run-btn" disabled>Convert to Markdown</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="output-section">
+        <div class="output-header">
+          <span>Output</span>
+          <span id="match-count" class="match-count" style="display: none">0 matches</span>
+        </div>
+        <div id="output" class="output-content">Results will appear here...</div>
+      </div>
+
+      <div class="examples-section">
+        <h3>Example Selectors</h3>
+        <div class="example-buttons">
+          <button class="example-btn" data-selector="a">All Links (a)</button>
+          <button class="example-btn" data-selector="p.intro">Intro Paragraphs (p.intro)</button>
+          <button class="example-btn" data-selector="nav > ul > li">Nav Items (nav > ul > li)</button>
+          <button class="example-btn" data-selector="h1, h2, h3">All Headings (h1, h2, h3)</button>
+          <button class="example-btn" data-selector="[href]">Elements with href</button>
+          <button class="example-btn" data-selector="li:first-child">First List Items</button>
+        </div>
+      </div>
+
+      <div class="info-box">
+        <strong>About JustJSHTML:</strong> A dependency-free JavaScript HTML5 parser designed to work everywhere
+        (browser, Node.js, etc.). It aims to pass the full official html5lib-tests suite.
+        <a href="https://github.com/simonw/justjshtml" target="_blank" rel="noreferrer">Learn more on GitHub</a>
+      </div>
+    </div>
+
+    <script type="module">
+      let JustHTML = null;
+      let stream = null;
+      let SelectorError = null;
+
+      const statusEl = document.getElementById("status");
+      const outputEl = document.getElementById("output");
+      const matchCountEl = document.getElementById("match-count");
+      const htmlInputEl = document.getElementById("html-input");
+      const urlInputEl = document.getElementById("url-input");
+      const selectorInputEl = document.getElementById("selector-input");
+      const textSelectorInputEl = document.getElementById("text-selector-input");
+      const markdownSelectorInputEl = document.getElementById("markdown-selector-input");
+
+      let ready = false;
+
+      // Tab switching
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+          document.querySelectorAll(".tab-content").forEach((c) => c.classList.remove("active"));
+          btn.classList.add("active");
+          document.getElementById(`${btn.dataset.tab}-tab`).classList.add("active");
+        });
+      });
+
+      // Mode switching
+      document.querySelectorAll(".mode-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          document.querySelectorAll(".mode-btn").forEach((b) => b.classList.remove("active"));
+          document.querySelectorAll(".mode-options").forEach((o) => o.classList.remove("active"));
+          btn.classList.add("active");
+          document.getElementById(`${btn.dataset.mode}-options`).classList.add("active");
+        });
+      });
+
+      function getHtmlInput() {
+        const pasteTab = document.getElementById("paste-tab");
+        if (pasteTab.classList.contains("active")) {
+          return htmlInputEl.value;
+        }
+        return htmlInputEl.value;
+      }
+
+      function ensureReady() {
+        if (ready) return true;
+        outputEl.textContent = "Library is still loading...";
+        outputEl.className = "output-content";
+        matchCountEl.style.display = "none";
+        return false;
+      }
+
+      function formatAttrs(attrs) {
+        const entries = Object.entries(attrs || {});
+        if (!entries.length) return "";
+        return entries
+          .map(([k, v]) => `${k}="${v == null ? "" : String(v)}"`)
+          .join(" ");
+      }
+
+      function queryHtml(htmlStr, selector) {
+        const doc = new JustHTML(htmlStr);
+        const results = doc.query(selector);
+        return {
+          count: results.length,
+          results: results.map((node) => node.to_html()),
+        };
+      }
+
+      function prettyPrintHtml(htmlStr) {
+        const doc = new JustHTML(htmlStr);
+        return doc.root.to_html();
+      }
+
+      function getTreeStructure(htmlStr) {
+        const doc = new JustHTML(htmlStr);
+
+        const formatNode = (node, depth = 0) => {
+          const prefix = "  ".repeat(depth);
+          const lines = [];
+
+          const name = node?.name ?? null;
+          if (name) {
+            const attrs = node?.attrs || {};
+            const attrEntries = Object.entries(attrs);
+            if (attrEntries.length) {
+              const attrStr = attrEntries.map(([k, v]) => `${k}="${v == null ? "" : String(v)}"`).join(" ");
+              lines.push(`${prefix}<${name} ${attrStr}>`);
+            } else {
+              lines.push(`${prefix}<${name}>`);
+            }
+
+            const children = node?.children || [];
+            for (const child of children) {
+              lines.push(...formatNode(child, depth + 1));
+            }
+          } else {
+            let text = String(node).trim();
+            if (text) {
+              if (text.length > 50) text = text.slice(0, 47) + "...";
+              lines.push(`${prefix}"${text}"`);
+            }
+          }
+
+          return lines;
+        };
+
+        const lines = [];
+        const rootChildren = doc.root?.children || [];
+        for (const child of rootChildren) lines.push(...formatNode(child, 0));
+        return lines.join("\n");
+      }
+
+      function pythonRepr(val) {
+        if (val == null) return "None";
+        if (typeof val === "string") return `'${val.replaceAll("\\\\", "\\\\\\\\").replaceAll("'", "\\\\'")}'`;
+        return String(val);
+      }
+
+      function pythonTupleRepr(items) {
+        return `(${items.map(pythonRepr).join(", ")})`;
+      }
+
+      function getStreamEvents(htmlStr) {
+        const events = [];
+        for (const [event, data] of stream(htmlStr)) {
+          if (event === "start") {
+            const [tag, attrs] = data;
+            const attrStr = formatAttrs(attrs);
+            if (attrStr) events.push(`START: <${tag} ${attrStr}>`);
+            else events.push(`START: <${tag}>`);
+          } else if (event === "end") {
+            events.push(`END:   </${data}>`);
+          } else if (event === "text") {
+            let text = String(data || "").trim();
+            if (!text) continue;
+            if (text.length > 60) text = text.slice(0, 57) + "...";
+            events.push(`TEXT:  "${text}"`);
+          } else if (event === "comment") {
+            events.push(`COMMENT: <!--${data}-->`);
+          } else if (event === "doctype") {
+            events.push(`DOCTYPE: ${pythonTupleRepr(data)}`);
+          }
+        }
+        return events.join("\n");
+      }
+
+      function extractText(htmlStr, selector = null) {
+        const doc = new JustHTML(htmlStr);
+        if (selector && selector.trim()) {
+          const results = doc.query(selector);
+          const output = [];
+          for (const node of results) {
+            const text = node.to_text();
+            if (text.trim()) output.push(text);
+          }
+          return { count: results.length, results: output };
+        }
+        return { count: 1, results: [doc.to_text()] };
+      }
+
+      function convertToMarkdown(htmlStr, selector = null) {
+        const doc = new JustHTML(htmlStr);
+        if (selector && selector.trim()) {
+          const results = doc.query(selector);
+          const output = [];
+          for (const node of results) {
+            const md = node.to_markdown();
+            if (md.trim()) output.push(md);
+          }
+          return { count: results.length, results: output };
+        }
+        return { count: 1, results: [doc.to_markdown()] };
+      }
+
+      async function runQuery() {
+        if (!ensureReady()) return;
+
+        const html = getHtmlInput();
+        const selector = selectorInputEl.value.trim();
+
+        if (!selector) {
+          outputEl.textContent = "Please enter a CSS selector";
+          matchCountEl.style.display = "none";
+          return;
+        }
+
+        try {
+          const { count, results } = queryHtml(html, selector);
+
+          matchCountEl.textContent = `${count} match${count !== 1 ? "es" : ""}`;
+          matchCountEl.style.display = "inline";
+
+          if (count === 0) {
+            outputEl.textContent = `No elements match the selector "${selector}"`;
+            outputEl.className = "output-content";
+          } else {
+            outputEl.textContent = results.join("\n\n---\n\n");
+            outputEl.className = "output-content";
+          }
+        } catch (error) {
+          let errorMsg = error?.message || String(error);
+          if (SelectorError && error instanceof SelectorError) {
+            errorMsg = "Selector Error: " + (error?.message || "");
+          }
+          outputEl.textContent = errorMsg;
+          outputEl.className = "output-content error";
+          matchCountEl.style.display = "none";
+        }
+      }
+
+      async function prettyPrint() {
+        if (!ensureReady()) return;
+        try {
+          outputEl.textContent = prettyPrintHtml(getHtmlInput());
+          outputEl.className = "output-content";
+          matchCountEl.style.display = "none";
+        } catch (error) {
+          outputEl.textContent = error?.message || String(error);
+          outputEl.className = "output-content error";
+          matchCountEl.style.display = "none";
+        }
+      }
+
+      async function showTree() {
+        if (!ensureReady()) return;
+        try {
+          outputEl.textContent = getTreeStructure(getHtmlInput());
+          outputEl.className = "output-content";
+          matchCountEl.style.display = "none";
+        } catch (error) {
+          outputEl.textContent = error?.message || String(error);
+          outputEl.className = "output-content error";
+          matchCountEl.style.display = "none";
+        }
+      }
+
+      async function showStreamEvents() {
+        if (!ensureReady()) return;
+        try {
+          outputEl.textContent = getStreamEvents(getHtmlInput());
+          outputEl.className = "output-content";
+          matchCountEl.style.display = "none";
+        } catch (error) {
+          outputEl.textContent = error?.message || String(error);
+          outputEl.className = "output-content error";
+          matchCountEl.style.display = "none";
+        }
+      }
+
+      async function extractTextMode() {
+        if (!ensureReady()) return;
+
+        const html = getHtmlInput();
+        const selector = textSelectorInputEl.value.trim();
+
+        try {
+          const { count, results } = extractText(html, selector || null);
+
+          if (selector) {
+            matchCountEl.textContent = `${count} match${count !== 1 ? "es" : ""}`;
+            matchCountEl.style.display = "inline";
+          } else {
+            matchCountEl.textContent = "Whole document";
+            matchCountEl.style.display = "inline";
+          }
+
+          if (count === 0) {
+            outputEl.textContent = `No elements match the selector "${selector}"`;
+            outputEl.className = "output-content";
+          } else {
+            outputEl.textContent = results.join("\n\n---\n\n");
+            outputEl.className = "output-content";
+          }
+        } catch (error) {
+          outputEl.textContent = error?.message || String(error);
+          outputEl.className = "output-content error";
+          matchCountEl.style.display = "none";
+        }
+      }
+
+      async function convertToMarkdownMode() {
+        if (!ensureReady()) return;
+
+        const html = getHtmlInput();
+        const selector = markdownSelectorInputEl.value.trim();
+
+        try {
+          const { count, results } = convertToMarkdown(html, selector || null);
+
+          if (selector) {
+            matchCountEl.textContent = `${count} match${count !== 1 ? "es" : ""}`;
+            matchCountEl.style.display = "inline";
+          } else {
+            matchCountEl.textContent = "Whole document";
+            matchCountEl.style.display = "inline";
+          }
+
+          if (count === 0) {
+            outputEl.textContent = `No elements match the selector "${selector}"`;
+            outputEl.className = "output-content";
+          } else {
+            outputEl.textContent = results.join("\n\n---\n\n");
+            outputEl.className = "output-content";
+          }
+        } catch (error) {
+          outputEl.textContent = error?.message || String(error);
+          outputEl.className = "output-content error";
+          matchCountEl.style.display = "none";
+        }
+      }
+
+      async function fetchUrl() {
+        const url = urlInputEl.value.trim();
+        if (!url) {
+          alert("Please enter a URL");
+          return;
+        }
+
+        try {
+          document.getElementById("fetch-btn").disabled = true;
+          document.getElementById("fetch-btn").textContent = "Fetching...";
+
+          const response = await fetch(url);
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+
+          const html = await response.text();
+          htmlInputEl.value = html;
+
+          // Switch to paste tab to show the fetched HTML
+          document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+          document.querySelectorAll(".tab-content").forEach((c) => c.classList.remove("active"));
+          document.querySelector('[data-tab="paste"]').classList.add("active");
+          document.getElementById("paste-tab").classList.add("active");
+
+          outputEl.textContent = `Fetched ${html.length} characters from ${url}. Select a mode above to process.`;
+          outputEl.className = "output-content";
+        } catch (error) {
+          outputEl.textContent =
+            `Failed to fetch URL: ${error.message}\n\n` +
+            "Note: The target URL must have CORS headers that allow cross-origin requests.";
+          outputEl.className = "output-content error";
+        } finally {
+          document.getElementById("fetch-btn").disabled = false;
+          document.getElementById("fetch-btn").textContent = "Fetch";
+        }
+      }
+
+      // Event listeners
+      document.getElementById("run-btn").addEventListener("click", runQuery);
+      document.getElementById("pretty-btn").addEventListener("click", prettyPrint);
+      document.getElementById("tree-btn").addEventListener("click", showTree);
+      document.getElementById("stream-btn").addEventListener("click", showStreamEvents);
+      document.getElementById("text-btn").addEventListener("click", extractTextMode);
+      document.getElementById("markdown-btn").addEventListener("click", convertToMarkdownMode);
+      document.getElementById("fetch-btn").addEventListener("click", fetchUrl);
+
+      selectorInputEl.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") runQuery();
+      });
+      textSelectorInputEl.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") extractTextMode();
+      });
+      markdownSelectorInputEl.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") convertToMarkdownMode();
+      });
+
+      // Example selector buttons
+      document.querySelectorAll(".example-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          selectorInputEl.value = btn.dataset.selector;
+          document.querySelectorAll(".mode-btn").forEach((b) => b.classList.remove("active"));
+          document.querySelectorAll(".mode-options").forEach((o) => o.classList.remove("active"));
+          document.querySelector('[data-mode="selector"]').classList.add("active");
+          document.getElementById("selector-options").classList.add("active");
+          runQuery();
+        });
+      });
+
+      async function init() {
+        try {
+          statusEl.textContent = "Loading modules...";
+          statusEl.className = "status";
+
+          const mod = await import("./src/index.js");
+          JustHTML = mod.JustHTML;
+          stream = mod.stream;
+          SelectorError = mod.SelectorError;
+
+          ready = true;
+          statusEl.textContent = "Ready";
+          statusEl.className = "status ready";
+
+          document.querySelectorAll("button").forEach((btn) => {
+            btn.disabled = false;
+          });
+        } catch (error) {
+          statusEl.textContent = "Error loading";
+          statusEl.className = "status error";
+
+          outputEl.textContent =
+            `Failed to initialize: ${error.message}\n\n` +
+            "Tip: if you opened this page via file://, try running a local server (e.g. python -m http.server).";
+          outputEl.className = "output-content error";
+        }
+      }
+
+      init();
+    </script>
+  </body>
+</html>
+
