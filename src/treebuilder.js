@@ -645,7 +645,6 @@ function handleBodyStartAppletLike(self, token) {
 }
 
 function handleBodyStartBr(self, token) {
-  self._close_p_element();
   self._reconstruct_active_formatting_elements();
   self._insert_element(token, { push: false });
   self.frameset_ok = false;
