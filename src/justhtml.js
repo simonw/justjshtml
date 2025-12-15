@@ -75,4 +75,8 @@ export class JustHTML {
   to_html(indent = 0, indentSize = 2, pretty = true) {
     return this.toHTML({ indent, indentSize, pretty });
   }
+
+  query(selector) {
+    return this.root.query(selector);
+  }
 }

@@ -1,4 +1,5 @@
 import { toHTML } from "./serialize.js";
+import { query } from "./selector.js";
 
 export class Node {
   constructor(name, { attrs = null, data = null, namespace = "html" } = {}) {
@@ -105,6 +106,10 @@ export class Node {
 
   to_html(indent = 0, indentSize = 2, pretty = true) {
     return this.toHTML({ indent, indentSize, pretty });
+  }
+
+  query(selector) {
+    return query(this, selector);
   }
 
   cloneNode(deep = false) {
