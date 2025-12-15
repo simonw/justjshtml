@@ -1,9 +1,11 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { normalizeEncodingLabel, sniffHTMLEncoding } from "../src/encoding.js";
 
-const REPO_ROOT = path.resolve(import.meta.dirname, "..");
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, "..");
 
 function parseArgs(argv) {
   const out = { testsDir: null };
@@ -151,4 +153,3 @@ async function main() {
 }
 
 await main();
-
