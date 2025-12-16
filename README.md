@@ -4,6 +4,8 @@ Dependency-free JavaScript HTML5 parser (browser + Node.js) built as a port of t
 
 Primary goal: pass the full [html5lib-tests](https://github.com/html5lib/html5lib-tests) suite (tokenizer, tree-construction, encoding, serializer fixtures) using only plain JavaScript.
 
+Background on this project: [I ported JustHTML from Python to JavaScript with Codex CLI and GPT-5.2 in 4.5 hours](https://simonwillison.net/2025/Dec/15/porting-justhtml/).
+
 ## Status
 
 - No runtime dependencies (no npm deps)
