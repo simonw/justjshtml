@@ -47,7 +47,7 @@ function isTestSelected(fileRel, filename, index, specs) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const testsDir = path.resolve(REPO_ROOT, args.testsDir || process.env.HTML5LIB_TESTS_DIR || "tests/html5lib-tests");
+  const testsDir = path.resolve(REPO_ROOT, args.testsDir || process.env.HTML5LIB_TESTS_DIR || "html5lib-tests");
   const serializerDir = path.join(testsDir, "serializer");
 
   const entries = await readdir(serializerDir, { withFileTypes: true });
