@@ -202,8 +202,8 @@ HTML5LIB_TESTS_DIR=/path/to/html5lib-tests node scripts/run-tokenizer-tests.js
 
 ## Attribution / Acknowledgements
 
-- **JustHTML** (Python) by Emil Stenström: `justjshtml` is a JavaScript port intended to match its behavior and API surface where practical.
-- **html5lib-tests** by the html5lib project: used as the primary conformance test suite.
-- **html5ever** by the Servo project: JustHTML started as a Python port of html5ever, and that architecture heavily influenced this port as well.
-- **Playground UI**: `playground.html` is adapted from the UI of `https://tools.simonwillison.net/justhtml`, but runs entirely in JavaScript (no Pyodide).
+- [**JustHTML**](https://github.com/EmilStenstrom/justhtml) (Python) by Emil Stenström: `justjshtml` is a JavaScript port intended to match its behavior and API surface where practical.
+- [**html5lib-tests**](https://github.com/html5lib/html5lib-tests) by the html5lib project: used as the primary conformance test suite.
+- [**html5ever**](https://github.com/servo/html5ever) by the Servo project: JustHTML started as a Python port of html5ever, and that architecture heavily influenced this port as well.
+- [**JustHTML Playground**](https://tools.simonwillison.net/justhtml): the Just**JS**HTML [playground](https://simonw.github.io/justjshtml/playground.html) is adapted from the Python-based JustHTML playground, but runs entirely in JavaScript (no Pyodide).
 
