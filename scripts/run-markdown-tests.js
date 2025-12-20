@@ -124,6 +124,56 @@ results.push(
 );
 
 results.push(
+  test("link with title attribute", () => {
+    const doc = new JustHTML('<a href="/example" title="foo">Link with a title</a>');
+    assert.equal(doc.toMarkdown(), '[Link with a title](/example "foo")');
+  })
+);
+
+results.push(
+  test("link with title containing quotes", () => {
+    const doc = new JustHTML('<a href="/url" title="He said &quot;hello&quot;">text</a>');
+    const md = doc.toMarkdown();
+    assert.ok(md.includes('[text](/url "He said \\"hello\\"")'));
+  })
+);
+
+results.push(
+  test("link with title containing backslash", () => {
+    const doc = new JustHTML('<a href="/url" title="path\\to\\file">text</a>');
+    const md = doc.toMarkdown();
+    assert.ok(md.includes('[text](/url "path\\\\to\\\\file")'));
+  })
+);
+
+results.push(
+  test("link with nested block element breaks link", () => {
+    const doc = new JustHTML('<a href="/url">text<ul><li>item</li></ul></a>');
+    const md = doc.toMarkdown();
+    assert.ok(md.includes('[text](/url)'));
+    assert.ok(md.includes('- item'));
+    assert.ok(!md.includes('<a'));
+  })
+);
+
+results.push(
+  test("link with deeply nested block element", () => {
+    const doc = new JustHTML('<a href="/url"><span><div>block</div></span></a>');
+    const md = doc.toMarkdown();
+    assert.ok(md.includes('block'));
+    assert.ok(!md.includes('<a'));
+  })
+);
+
+results.push(
+  test("link with inline elements only", () => {
+    const doc = new JustHTML('<a href="/url"><strong>Bold</strong> and <em>italic</em></a>');
+    assert.equal(doc.toMarkdown(), '[**Bold** and *italic*](/url)');
+  })
+);
+
+
+results.push(
   test("template includes templateContent", () => {
     const doc = new JustHTML("<template>T</template>");
     const html = doc.root.children[0];
