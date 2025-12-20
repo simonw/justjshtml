@@ -267,18 +267,58 @@ function toMarkdownWalk(node, builder, preserveWhitespace, listDepth) {
     return;
   }
 
+
+  // Helper to check if a node contains block elements (deep walk)
+  function containsBlockElement(node) {
+    if (!node || !node.name) return false;
+    if (MARKDOWN_BLOCK_ELEMENTS.has(node.name)) return true;
+    return (node.children || []).some(containsBlockElement);
+  }
+
   if (tag === "a") {
     let href = "";
+    let title = "";
     const attrs = node.attrs || {};
     if (Object.prototype.hasOwnProperty.call(attrs, "href") && attrs.href != null) href = String(attrs.href);
-    builder.raw("[");
-    for (const child of node.children || []) toMarkdownWalk(child, builder, false, listDepth);
-    builder.raw("]");
-    if (href) {
-      builder.raw("(");
-      builder.raw(href);
-      builder.raw(")");
+    if (Object.prototype.hasOwnProperty.call(attrs, "title") && attrs.title != null) title = String(attrs.title);
+    
+    // Split children into inline and block parts
+    const inlineChildren = [];
+    const blockChildren = [];
+    
+    for (const child of node.children || []) {
+      if (containsBlockElement(child)) blockChildren.push(child);
+      else inlineChildren.push(child);
     }
+    
+    // Render markdown link for inline children only
+    if (inlineChildren.length > 0) {
+      builder.raw("[");
+      for (const child of inlineChildren) toMarkdownWalk(child, builder, false, listDepth);
+      builder.raw("]");
+      if (href) {
+        builder.raw("(");
+        builder.raw(href);
+        if (title) {
+          // escape backslashes, quotes, and newlines
+          const escapedTitle = title
+            .replace(/\\/g, "\\\\")
+            .replace(/"/g, '\\"')
+            .replace(/\n/g, " ");
+          builder.raw(" \"");
+          builder.raw(escapedTitle);
+          builder.raw("\"");
+        }
+        builder.raw(")");
+      }
+    }
+    
+    // Render block children separately (breaks the link)
+    for (const child of blockChildren) {
+      builder.ensureNewlines(2);
+      toMarkdownWalk(child, builder, false, listDepth);
+    }
+    
     return;
   }
 
