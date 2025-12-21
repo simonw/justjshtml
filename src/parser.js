@@ -11,7 +11,6 @@ export function parseDocument(html, options = {}) {
 
   const shouldCollect = Boolean(collectErrors);
   const treeBuilder = new TreeBuilder(fragmentContext, iframeSrcdoc, shouldCollect);
-  treeBuilder.openElements = treeBuilder.open_elements;
 
   const opts = tokenizerOpts instanceof TokenizerOpts ? tokenizerOpts : new TokenizerOpts(tokenizerOpts || {});
 

@@ -22,8 +22,20 @@ import {
 } from "./constants.js";
 import { FragmentContext } from "./context.js";
 import { Node } from "./node.js";
-import { CharacterToken, CommentToken, DoctypeToken, EOFToken, ParseError, Tag, TokenSinkResult } from "./tokens.js";
+import { CharacterToken, CommentToken, DoctypeToken, EOFToken, ParseError, Tag, TokenSinkResult, Reprocess, TagId } from "./tokens.js";
 import { InsertionMode, doctypeErrorAndQuirks, isAllWhitespace } from "./treebuilder_utils.js";
+import {
+  getTagId,
+  hasCategory,
+  TagCategory,
+  isHeadingElement as isHeadingTagId,
+  isFormattingElement as isFormattingTagId,
+  isSpecialElement as isSpecialTagId,
+  isEofAllowedUnclosed,
+  isTableSectionTag,
+  isTableCellTag,
+  isRubyTag,
+} from "./tag_id.js";
 
 function lowerAscii(value) {
   return value ? String(value).toLowerCase() : "";
@@ -59,7 +71,7 @@ function modeInitial(self, token) {
     if (isAllWhitespace(token.data)) return null;
     self._parse_error("expected-doctype-but-got-chars");
     self._set_quirks_mode("quirks");
-    return ["reprocess", InsertionMode.BEFORE_HTML, token];
+    return new Reprocess(InsertionMode.BEFORE_HTML, token);
   }
   if (token instanceof CommentToken) {
     self._append_comment_to_document(token.data);
@@ -69,7 +81,7 @@ function modeInitial(self, token) {
     self._parse_error("expected-doctype-but-got-eof");
     self._set_quirks_mode("quirks");
     self.mode = InsertionMode.BEFORE_HTML;
-    return ["reprocess", InsertionMode.BEFORE_HTML, token];
+    return new Reprocess(InsertionMode.BEFORE_HTML, token);
   }
 
   if (token instanceof Tag) {
@@ -77,7 +89,7 @@ function modeInitial(self, token) {
     else self._parse_error("expected-doctype-but-got-end-tag", token.name);
   }
   self._set_quirks_mode("quirks");
-  return ["reprocess", InsertionMode.BEFORE_HTML, token];
+  return new Reprocess(InsertionMode.BEFORE_HTML, token);
 }
 
 function modeBeforeHtml(self, token) {
@@ -88,26 +100,34 @@ function modeBeforeHtml(self, token) {
   }
 
   if (token instanceof Tag) {
-    if (token.kind === Tag.START && token.name === "html") {
-      self._create_root(token.attrs);
-      self.mode = InsertionMode.BEFORE_HEAD;
-      return null;
-    }
-    if (token.kind === Tag.END && ["head", "body", "html", "br"].includes(token.name)) {
-      self._create_root({});
-      self.mode = InsertionMode.BEFORE_HEAD;
-      return ["reprocess", InsertionMode.BEFORE_HEAD, token];
-    }
-    if (token.kind === Tag.END) {
-      self._parse_error("unexpected-end-tag-before-html", token.name);
-      return null;
+    const tagId = token.tagId;
+    if (token.kind === Tag.START) {
+      if (tagId === TagId.HTML) {
+        self._create_root(token.attrs);
+        self.mode = InsertionMode.BEFORE_HEAD;
+        return null;
+      }
+    } else {
+      // End tag
+      switch (tagId) {
+        case TagId.HEAD:
+        case TagId.BODY:
+        case TagId.HTML:
+        case TagId.BR:
+          self._create_root({});
+          self.mode = InsertionMode.BEFORE_HEAD;
+          return new Reprocess(InsertionMode.BEFORE_HEAD, token);
+        default:
+          self._parse_error("unexpected-end-tag-before-html", token.name);
+          return null;
+      }
     }
   }
 
   if (token instanceof EOFToken) {
     self._create_root({});
     self.mode = InsertionMode.BEFORE_HEAD;
-    return ["reprocess", InsertionMode.BEFORE_HEAD, token];
+    return new Reprocess(InsertionMode.BEFORE_HEAD, token);
   }
 
   if (token instanceof CharacterToken) {
@@ -117,7 +137,7 @@ function modeBeforeHtml(self, token) {
 
   self._create_root({});
   self.mode = InsertionMode.BEFORE_HEAD;
-  return ["reprocess", InsertionMode.BEFORE_HEAD, token];
+  return new Reprocess(InsertionMode.BEFORE_HEAD, token);
 }
 
 function modeBeforeHead(self, token) {
@@ -138,37 +158,43 @@ function modeBeforeHead(self, token) {
   }
 
   if (token instanceof Tag) {
-    if (token.kind === Tag.START && token.name === "html") {
-      const html = self.open_elements[0];
-      self._add_missing_attributes(html, token.attrs);
-      return null;
-    }
-    if (token.kind === Tag.START && token.name === "head") {
-      const head = self._insert_element(token, { push: true });
-      self.head_element = head;
-      self.mode = InsertionMode.IN_HEAD;
-      return null;
-    }
-    if (token.kind === Tag.END && ["head", "body", "html", "br"].includes(token.name)) {
-      self.head_element = self._insert_phantom("head");
-      self.mode = InsertionMode.IN_HEAD;
-      return ["reprocess", InsertionMode.IN_HEAD, token];
-    }
-    if (token.kind === Tag.END) {
-      self._parse_error("unexpected-end-tag-before-head", token.name);
-      return null;
+    const tagId = token.tagId;
+    if (token.kind === Tag.START) {
+      switch (tagId) {
+        case TagId.HTML:
+          self._add_missing_attributes(self.openElements[0], token.attrs);
+          return null;
+        case TagId.HEAD:
+          self.head_element = self._insert_element(token, { push: true });
+          self.mode = InsertionMode.IN_HEAD;
+          return null;
+      }
+    } else {
+      // End tag
+      switch (tagId) {
+        case TagId.HEAD:
+        case TagId.BODY:
+        case TagId.HTML:
+        case TagId.BR:
+          self.head_element = self._insert_phantom("head");
+          self.mode = InsertionMode.IN_HEAD;
+          return new Reprocess(InsertionMode.IN_HEAD, token);
+        default:
+          self._parse_error("unexpected-end-tag-before-head", token.name);
+          return null;
+      }
     }
   }
 
   if (token instanceof EOFToken) {
     self.head_element = self._insert_phantom("head");
     self.mode = InsertionMode.IN_HEAD;
-    return ["reprocess", InsertionMode.IN_HEAD, token];
+    return new Reprocess(InsertionMode.IN_HEAD, token);
   }
 
   self.head_element = self._insert_phantom("head");
   self.mode = InsertionMode.IN_HEAD;
-  return ["reprocess", InsertionMode.IN_HEAD, token];
+  return new Reprocess(InsertionMode.IN_HEAD, token);
 }
 
 function modeInHead(self, token) {
@@ -180,16 +206,20 @@ function modeInHead(self, token) {
 
     const data = token.data || "";
     let i = 0;
-    while (i < data.length && "\t\n\f\r ".includes(data[i])) i += 1;
+    while (i < data.length) {
+      const c = data[i];
+      if (c !== "\t" && c !== "\n" && c !== "\f" && c !== "\r" && c !== " ") break;
+      i += 1;
+    }
     const leadingWs = data.slice(0, i);
     const remaining = data.slice(i);
     if (leadingWs) {
-      const current = self.open_elements.length ? self.open_elements[self.open_elements.length - 1] : null;
+      const current = self.openElements.length ? self.openElements[self.openElements.length - 1] : null;
       if (current && current.has_child_nodes()) self._append_text(leadingWs);
     }
     self._pop_current();
     self.mode = InsertionMode.AFTER_HEAD;
-    return ["reprocess", InsertionMode.AFTER_HEAD, new CharacterToken(remaining)];
+    return new Reprocess(InsertionMode.AFTER_HEAD, new CharacterToken(remaining));
   }
 
   if (token instanceof CommentToken) {
@@ -198,72 +228,76 @@ function modeInHead(self, token) {
   }
 
   if (token instanceof Tag) {
-    if (token.kind === Tag.START && token.name === "html") {
-      self._pop_current();
-      self.mode = InsertionMode.AFTER_HEAD;
-      return ["reprocess", InsertionMode.AFTER_HEAD, token];
-    }
-
-    if (token.kind === Tag.START && ["base", "basefont", "bgsound", "link", "meta"].includes(token.name)) {
-      self._insert_element(token, { push: false });
-      return null;
-    }
-
-    if (token.kind === Tag.START && token.name === "template") {
-      self._insert_element(token, { push: true });
-      self._push_formatting_marker();
-      self.frameset_ok = false;
-      self.mode = InsertionMode.IN_TEMPLATE;
-      self.template_modes.push(InsertionMode.IN_TEMPLATE);
-      return null;
-    }
-
-    if (token.kind === Tag.END && token.name === "template") {
-      const hasTemplate = self.open_elements.some((node) => node.name === "template");
-      if (!hasTemplate) return null;
-      self._generate_implied_end_tags();
-      self._pop_until_inclusive("template");
-      self._clear_active_formatting_up_to_marker();
-      self.template_modes.pop();
-      self._reset_insertion_mode();
-      return null;
-    }
-
-    if (token.kind === Tag.START && ["title", "style", "script", "noframes"].includes(token.name)) {
-      self._insert_element(token, { push: true });
-      self.original_mode = self.mode;
-      self.mode = InsertionMode.TEXT;
-      return null;
-    }
-
-    if (token.kind === Tag.START && token.name === "noscript") {
-      self._insert_element(token, { push: true });
-      self.mode = InsertionMode.IN_HEAD_NOSCRIPT;
-      return null;
-    }
-
-    if (token.kind === Tag.END && token.name === "head") {
-      self._pop_current();
-      self.mode = InsertionMode.AFTER_HEAD;
-      return null;
-    }
-
-    if (token.kind === Tag.END && ["body", "html", "br"].includes(token.name)) {
-      self._pop_current();
-      self.mode = InsertionMode.AFTER_HEAD;
-      return ["reprocess", InsertionMode.AFTER_HEAD, token];
+    const tagId = token.tagId;
+    if (token.kind === Tag.START) {
+      switch (tagId) {
+        case TagId.HTML:
+          self._pop_current();
+          self.mode = InsertionMode.AFTER_HEAD;
+          return new Reprocess(InsertionMode.AFTER_HEAD, token);
+        case TagId.BASE:
+        case TagId.BASEFONT:
+        case TagId.BGSOUND:
+        case TagId.LINK:
+        case TagId.META:
+          self._insert_element(token, { push: false });
+          return null;
+        case TagId.TEMPLATE:
+          self._insert_element(token, { push: true });
+          self._push_formatting_marker();
+          self.frameset_ok = false;
+          self.mode = InsertionMode.IN_TEMPLATE;
+          self.template_modes.push(InsertionMode.IN_TEMPLATE);
+          return null;
+        case TagId.TITLE:
+        case TagId.STYLE:
+        case TagId.SCRIPT:
+        case TagId.NOFRAMES:
+          self._insert_element(token, { push: true });
+          self.original_mode = self.mode;
+          self.mode = InsertionMode.TEXT;
+          return null;
+        case TagId.NOSCRIPT:
+          self._insert_element(token, { push: true });
+          self.mode = InsertionMode.IN_HEAD_NOSCRIPT;
+          return null;
+      }
+    } else {
+      // End tag
+      switch (tagId) {
+        case TagId.TEMPLATE: {
+          const hasTemplate = self.openElements.some((node) => node.name === "template");
+          if (!hasTemplate) return null;
+          self._generate_implied_end_tags();
+          self._pop_until_inclusive("template");
+          self._clear_active_formatting_up_to_marker();
+          self.template_modes.pop();
+          self._reset_insertion_mode();
+          return null;
+        }
+        case TagId.HEAD:
+          self._pop_current();
+          self.mode = InsertionMode.AFTER_HEAD;
+          return null;
+        case TagId.BODY:
+        case TagId.HTML:
+        case TagId.BR:
+          self._pop_current();
+          self.mode = InsertionMode.AFTER_HEAD;
+          return new Reprocess(InsertionMode.AFTER_HEAD, token);
+      }
     }
   }
 
   if (token instanceof EOFToken) {
     self._pop_current();
     self.mode = InsertionMode.AFTER_HEAD;
-    return ["reprocess", InsertionMode.AFTER_HEAD, token];
+    return new Reprocess(InsertionMode.AFTER_HEAD, token);
   }
 
   self._pop_current();
   self.mode = InsertionMode.AFTER_HEAD;
-  return ["reprocess", InsertionMode.AFTER_HEAD, token];
+  return new Reprocess(InsertionMode.AFTER_HEAD, token);
 }
 
 function modeInHeadNoscript(self, token) {
@@ -273,41 +307,54 @@ function modeInHeadNoscript(self, token) {
     self._parse_error("unexpected-start-tag", "text");
     self._pop_current();
     self.mode = InsertionMode.IN_HEAD;
-    return ["reprocess", InsertionMode.IN_HEAD, token];
+    return new Reprocess(InsertionMode.IN_HEAD, token);
   }
   if (token instanceof CommentToken) return modeInHead(self, token);
   if (token instanceof Tag) {
+    const tagId = token.tagId;
     if (token.kind === Tag.START) {
-      if (token.name === "html") return modeInBody(self, token);
-      if (["basefont", "bgsound", "link", "meta", "noframes", "style"].includes(token.name)) return modeInHead(self, token);
-      if (["head", "noscript"].includes(token.name)) {
-        self._parse_error("unexpected-start-tag", token.name);
-        return null;
+      switch (tagId) {
+        case TagId.HTML:
+          return modeInBody(self, token);
+        case TagId.BASEFONT:
+        case TagId.BGSOUND:
+        case TagId.LINK:
+        case TagId.META:
+        case TagId.NOFRAMES:
+        case TagId.STYLE:
+          return modeInHead(self, token);
+        case TagId.HEAD:
+        case TagId.NOSCRIPT:
+          self._parse_error("unexpected-start-tag", token.name);
+          return null;
+        default:
+          self._parse_error("unexpected-start-tag", token.name);
+          self._pop_current();
+          self.mode = InsertionMode.IN_HEAD;
+          return new Reprocess(InsertionMode.IN_HEAD, token);
       }
-      self._parse_error("unexpected-start-tag", token.name);
-      self._pop_current();
-      self.mode = InsertionMode.IN_HEAD;
-      return ["reprocess", InsertionMode.IN_HEAD, token];
     }
-    if (token.name === "noscript") {
-      self._pop_current();
-      self.mode = InsertionMode.IN_HEAD;
-      return null;
+    // End tag
+    switch (tagId) {
+      case TagId.NOSCRIPT:
+        self._pop_current();
+        self.mode = InsertionMode.IN_HEAD;
+        return null;
+      case TagId.BR:
+        self._parse_error("unexpected-end-tag", token.name);
+        self._pop_current();
+        self.mode = InsertionMode.IN_HEAD;
+        return new Reprocess(InsertionMode.IN_HEAD, token);
+      default:
+        self._parse_error("unexpected-end-tag", token.name);
+        return null;
     }
-    if (token.name === "br") {
-      self._parse_error("unexpected-end-tag", token.name);
-      self._pop_current();
-      self.mode = InsertionMode.IN_HEAD;
-      return ["reprocess", InsertionMode.IN_HEAD, token];
-    }
-    self._parse_error("unexpected-end-tag", token.name);
-    return null;
   }
   if (token instanceof EOFToken) {
     self._parse_error("expected-closing-tag-but-got-eof", "noscript");
     self._pop_current();
     self.mode = InsertionMode.IN_HEAD;
-    return ["reprocess", InsertionMode.IN_HEAD, token];
+    return new Reprocess(InsertionMode.IN_HEAD, token);
   }
   return null;
 }
@@ -328,7 +375,7 @@ function modeAfterHead(self, token) {
       return null;
     }
     self._insert_body_if_missing();
-    return ["reprocess", InsertionMode.IN_BODY, new CharacterToken(data)];
+    return new Reprocess(InsertionMode.IN_BODY, new CharacterToken(data));
   }
 
   if (token instanceof CommentToken) {
@@ -337,83 +384,84 @@ function modeAfterHead(self, token) {
   }
 
   if (token instanceof Tag) {
-    if (token.kind === Tag.START && token.name === "html") {
-      self._insert_body_if_missing();
-      return ["reprocess", InsertionMode.IN_BODY, token];
-    }
-    if (token.kind === Tag.START && token.name === "body") {
-      self._insert_element(token, { push: true });
-      self.mode = InsertionMode.IN_BODY;
-      self.frameset_ok = false;
-      return null;
-    }
-
-    if (token.kind === Tag.START && token.name === "frameset") {
-      self._insert_element(token, { push: true });
-      self.mode = InsertionMode.IN_FRAMESET;
-      return null;
-    }
-
-    if (token.kind === Tag.START && token.name === "input") {
-      let inputType = null;
-      const attrs = token.attrs || {};
-      for (const [name, value] of Object.entries(attrs)) {
-        if (name === "type") {
-          inputType = String(value || "").toLowerCase();
-          break;
+    const tagId = token.tagId;
+    if (token.kind === Tag.START) {
+      switch (tagId) {
+        case TagId.HTML:
+          self._insert_body_if_missing();
+          return new Reprocess(InsertionMode.IN_BODY, token);
+        case TagId.BODY:
+          self._insert_element(token, { push: true });
+          self.mode = InsertionMode.IN_BODY;
+          self.frameset_ok = false;
+          return null;
+        case TagId.FRAMESET:
+          self._insert_element(token, { push: true });
+          self.mode = InsertionMode.IN_FRAMESET;
+          return null;
+        case TagId.INPUT: {
+          let inputType = null;
+          const attrs = token.attrs || {};
+          for (const [name, value] of Object.entries(attrs)) {
+            if (name === "type") {
+              inputType = String(value || "").toLowerCase();
+              break;
+            }
+          }
+          if (inputType === "hidden") {
+            self._parse_error("unexpected-hidden-input-after-head");
+            return null;
+          }
+          self._insert_body_if_missing();
+          return new Reprocess(InsertionMode.IN_BODY, token);
         }
+        case TagId.BASE:
+        case TagId.BASEFONT:
+        case TagId.BGSOUND:
+        case TagId.LINK:
+        case TagId.META:
+        case TagId.TITLE:
+        case TagId.STYLE:
+        case TagId.SCRIPT:
+        case TagId.NOSCRIPT: {
+          self.openElements.push(self.head_element);
+          const result = modeInHead(self, token);
+          const headIndex = self.openElements.indexOf(self.head_element);
+          if (headIndex !== -1) self.openElements.splice(headIndex, 1);
+          return result;
+        }
+        case TagId.TEMPLATE:
+          self.openElements.push(self.head_element);
+          self.mode = InsertionMode.IN_HEAD;
+          return new Reprocess(InsertionMode.IN_HEAD, token);
       }
-      if (inputType === "hidden") {
-        self._parse_error("unexpected-hidden-input-after-head");
-        return null;
+    } else {
+      // End tag
+      switch (tagId) {
+        case TagId.TEMPLATE:
+          return modeInHead(self, token);
+        case TagId.BODY:
+          self._insert_body_if_missing();
+          return new Reprocess(InsertionMode.IN_BODY, token);
+        case TagId.HTML:
+        case TagId.BR:
+          self._insert_body_if_missing();
+          return new Reprocess(InsertionMode.IN_BODY, token);
+        default:
+          self._parse_error("unexpected-end-tag-after-head", token.name);
+          return null;
       }
-      self._insert_body_if_missing();
-      return ["reprocess", InsertionMode.IN_BODY, token];
-    }
-
-    if (
-      token.kind === Tag.START &&
-      ["base", "basefont", "bgsound", "link", "meta", "title", "style", "script", "noscript"].includes(token.name)
-    ) {
-      self.open_elements.push(self.head_element);
-      const result = modeInHead(self, token);
-      const headIndex = self.open_elements.indexOf(self.head_element);
-      if (headIndex !== -1) self.open_elements.splice(headIndex, 1);
-      return result;
-    }
-
-    if (token.kind === Tag.START && token.name === "template") {
-      self.open_elements.push(self.head_element);
-      self.mode = InsertionMode.IN_HEAD;
-      return ["reprocess", InsertionMode.IN_HEAD, token];
-    }
-
-    if (token.kind === Tag.END && token.name === "template") return modeInHead(self, token);
-
-    if (token.kind === Tag.END && token.name === "body") {
-      self._insert_body_if_missing();
-      return ["reprocess", InsertionMode.IN_BODY, token];
-    }
-
-    if (token.kind === Tag.END && (token.name === "html" || token.name === "br")) {
-      self._insert_body_if_missing();
-      return ["reprocess", InsertionMode.IN_BODY, token];
-    }
-
-    if (token.kind === Tag.END) {
-      self._parse_error("unexpected-end-tag-after-head", token.name);
-      return null;
     }
   }
 
   if (token instanceof EOFToken) {
     self._insert_body_if_missing();
     self.mode = InsertionMode.IN_BODY;
-    return ["reprocess", InsertionMode.IN_BODY, token];
+    return new Reprocess(InsertionMode.IN_BODY, token);
   }
 
   self._insert_body_if_missing();
-  return ["reprocess", InsertionMode.IN_BODY, token];
+  return new Reprocess(InsertionMode.IN_BODY, token);
 }
 
 function modeText(self, token) {
@@ -422,7 +470,7 @@ function modeText(self, token) {
     return null;
   }
   if (token instanceof EOFToken) {
-    const tagName = self.open_elements.length ? self.open_elements[self.open_elements.length - 1].name : null;
+    const tagName = self.openElements.length ? self.openElements[self.openElements.length - 1].name : null;
     self._parse_error("expected-named-closing-tag-but-got-eof", tagName);
     self._pop_current();
     self.mode = self.original_mode || InsertionMode.IN_BODY;
@@ -487,7 +535,7 @@ function handleBodyStartHtml(self, token) {
     self._parse_error("unexpected-start-tag", token.name);
     return null;
   }
-  if (self.open_elements.length) self._add_missing_attributes(self.open_elements[0], token.attrs);
+  if (self.openElements.length) self._add_missing_attributes(self.openElements[0], token.attrs);
   return null;
 }
 
@@ -496,9 +544,9 @@ function handleBodyStartBody(self, token) {
     self._parse_error("unexpected-start-tag", token.name);
     return null;
   }
-  if (self.open_elements.length > 1) {
+  if (self.openElements.length > 1) {
     self._parse_error("unexpected-start-tag", token.name);
-    const body = self.open_elements.length > 1 ? self.open_elements[1] : null;
+    const body = self.openElements.length > 1 ? self.openElements[1] : null;
     if (body && body.name === "body") self._add_missing_attributes(body, token.attrs);
     self.frameset_ok = false;
     return null;
@@ -524,7 +572,7 @@ function handleBodyStartBlockWithP(self, token) {
 
 function handleBodyStartHeading(self, token) {
   self._close_p_element();
-  if (self.open_elements.length && HEADING_ELEMENTS.has(self.open_elements[self.open_elements.length - 1].name)) {
+  if (self.openElements.length && HEADING_ELEMENTS.has(self.openElements[self.openElements.length - 1].name)) {
     self._parse_error("unexpected-start-tag", token.name);
     self._pop_current();
   }
@@ -665,8 +713,8 @@ function handleBodyStartFrameset(self, token) {
   }
 
   let bodyIndex = null;
-  for (let i = 0; i < self.open_elements.length; i += 1) {
-    if (self.open_elements[i].name === "body") {
+  for (let i = 0; i < self.openElements.length; i += 1) {
+    if (self.openElements[i].name === "body") {
       bodyIndex = i;
       break;
     }
@@ -676,9 +724,9 @@ function handleBodyStartFrameset(self, token) {
     return null;
   }
 
-  const bodyElem = self.open_elements[bodyIndex];
+  const bodyElem = self.openElements[bodyIndex];
   if (bodyElem.parent) bodyElem.parent.remove_child(bodyElem);
-  self.open_elements.length = bodyIndex;
+  self.openElements.length = bodyIndex;
 
   self._insert_element(token, { push: true });
   self.mode = InsertionMode.IN_FRAMESET;
@@ -771,8 +819,8 @@ function handleBodyStartSelect(self, token) {
 }
 
 function handleBodyStartOption(self, token) {
-  if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
-    self.open_elements.pop();
+  if (self.openElements.length && self.openElements[self.openElements.length - 1].name === "option") {
+    self.openElements.pop();
   }
   self._reconstruct_active_formatting_elements();
   self._insert_element(token, { push: true });
@@ -780,8 +828,8 @@ function handleBodyStartOption(self, token) {
 }
 
 function handleBodyStartOptgroup(self, token) {
-  if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
-    self.open_elements.pop();
+  if (self.openElements.length && self.openElements[self.openElements.length - 1].name === "option") {
+    self.openElements.pop();
   }
   self._reconstruct_active_formatting_elements();
   self._insert_element(token, { push: true });
@@ -795,7 +843,7 @@ function handleBodyStartRpRt(self, token) {
 }
 
 function handleBodyStartRbRtc(self, token) {
-  if (self.open_elements.length && SET_RB_RP_RT_RTC.has(self.open_elements[self.open_elements.length - 1].name)) {
+  if (self.openElements.length && SET_RB_RP_RT_RTC.has(self.openElements[self.openElements.length - 1].name)) {
     self._generate_implied_end_tags();
   }
   self._insert_element(token, { push: true });
@@ -966,7 +1014,7 @@ function handleBodyEndForm(self, token) {
     self._parse_error("unexpected-end-tag", token.name);
     return null;
   }
-  const removed = self._remove_from_open_elements(self.form_element);
+  const removed = self._remove_from_openElements(self.form_element);
   self.form_element = null;
   if (!removed) self._parse_error("unexpected-end-tag", token.name);
   return null;
@@ -978,8 +1026,8 @@ function handleBodyEndAppletLike(self, token) {
     self._parse_error("unexpected-end-tag", name);
     return null;
   }
-  while (self.open_elements.length) {
-    const popped = self.open_elements.pop();
+  while (self.openElements.length) {
+    const popped = self.openElements.pop();
     if (popped.name === name) break;
   }
   self._clear_active_formatting_up_to_marker();
@@ -993,11 +1041,11 @@ function handleBodyEndHeading(self, token) {
     return null;
   }
   self._generate_implied_end_tags();
-  if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name !== name) {
+  if (self.openElements.length && self.openElements[self.openElements.length - 1].name !== name) {
     self._parse_error("end-tag-too-early", name);
   }
-  while (self.open_elements.length) {
-    const popped = self.open_elements.pop();
+  while (self.openElements.length) {
+    const popped = self.openElements.pop();
     if (HEADING_ELEMENTS.has(popped.name)) break;
   }
   return null;
@@ -1010,7 +1058,7 @@ function handleBodyEndBlock(self, token) {
     return null;
   }
   self._generate_implied_end_tags();
-  if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name !== name) {
+  if (self.openElements.length && self.openElements[self.openElements.length - 1].name !== name) {
     self._parse_error("end-tag-too-early", name);
   }
   self._pop_until_any_inclusive(new Set([name]));
@@ -1018,7 +1066,7 @@ function handleBodyEndBlock(self, token) {
 }
 
 function handleBodyEndTemplate(self, token) {
-  const hasTemplate = self.open_elements.some((node) => node.name === "template");
+  const hasTemplate = self.openElements.some((node) => node.name === "template");
   if (!hasTemplate) return null;
   self._generate_implied_end_tags();
   self._pop_until_inclusive("template");
@@ -1077,20 +1125,22 @@ const BODY_END_HANDLERS = {
 };
 
 function handleTagInBody(self, token) {
+  const name = token.name;
   if (token.kind === Tag.START) {
-    const handler = BODY_START_HANDLERS[token.name];
+    const handler = BODY_START_HANDLERS[name];
     if (handler) return handler(self, token);
     return handleBodyStartDefault(self, token);
   }
 
-  const name = token.name;
-  if (name === "br") {
+  // End tag
+  const tagId = token.tagId;
+  if (tagId === TagId.BR) {
     self._parse_error("unexpected-end-tag", name);
-    const brTag = new Tag(Tag.START, "br", {}, false);
+    const brTag = new Tag(Tag.START, "br", {}, false, TagId.BR);
     return modeInBody(self, brTag);
   }
 
-  if (FORMATTING_ELEMENTS.has(name)) {
+  if (isFormattingTagId(tagId)) {
     self._adoption_agency(name);
     return null;
   }
@@ -1105,15 +1155,16 @@ function handleTagInBody(self, token) {
 function handleEofInBody(self, token) {
   if (self.template_modes.length) return modeInTemplate(self, token);
 
-  for (const node of self.open_elements) {
-    if (!EOF_ALLOWED_UNCLOSED.has(node.name)) {
+  for (const node of self.openElements) {
+    const nodeTagId = node.tagId ?? getTagId(node.name);
+    if (!isEofAllowedUnclosed(nodeTagId)) {
       self._parse_error("expected-closing-tag-but-got-eof", node.name);
       break;
     }
   }
 
   self.mode = InsertionMode.AFTER_BODY;
-  return ["reprocess", InsertionMode.AFTER_BODY, token];
+  return new Reprocess(InsertionMode.AFTER_BODY, token);
 }
 
 function modeInBody(self, token) {
@@ -1127,7 +1178,7 @@ function modeInBody(self, token) {
 function modeAfterBody(self, token) {
   if (token instanceof CharacterToken && isAllWhitespace(token.data)) return modeInBody(self, token);
   if (token instanceof CommentToken) {
-    const html = self.open_elements.length ? self.open_elements[0] : null;
+    const html = self.openElements.length ? self.openElements[0] : null;
     self._append_comment(token.data, html || undefined);
     return null;
   }
@@ -1266,7 +1317,7 @@ function modeInTable(self, token) {
         if (inputType === "hidden") {
           self._parse_error("unexpected-hidden-input-in-table");
           self._insert_element(token, { push: true });
-          self.open_elements.pop();
+          self.openElements.pop();
           return null;
         }
       }
@@ -1275,7 +1326,7 @@ function modeInTable(self, token) {
         if (self.form_element == null) {
           const node = self._insert_element(token, { push: true });
           self.form_element = node;
-          self.open_elements.pop();
+          self.openElements.pop();
         }
         return null;
       }
@@ -1384,7 +1435,7 @@ function modeInCaption(self, token) {
 }
 
 function modeInColumnGroup(self, token) {
-  const current = self.open_elements.length ? self.open_elements[self.open_elements.length - 1] : null;
+  const current = self.openElements.length ? self.openElements[self.openElements.length - 1] : null;
 
   if (token instanceof CharacterToken) {
     const data = token.data || "";
@@ -1421,7 +1472,7 @@ function modeInColumnGroup(self, token) {
       if (name === "html") return modeInBody(self, token);
       if (name === "col") {
         self._insert_element(token, { push: true });
-        self.open_elements.pop();
+        self.openElements.pop();
         return null;
       }
       if (name === "template") return modeInHead(self, token);
@@ -1517,7 +1568,7 @@ function modeInTableBody(self, token) {
       }
 
       if (TABLE_BODY_EXIT_START_TAGS.has(name)) {
-        const current = self.open_elements.length ? self.open_elements[self.open_elements.length - 1] : null;
+        const current = self.openElements.length ? self.openElements[self.openElements.length - 1] : null;
         if (current && current.name === "template") {
           self._parse_error("unexpected-start-tag-in-template-table-context", name);
           return null;
@@ -1531,8 +1582,8 @@ function modeInTableBody(self, token) {
           self._parse_error("unexpected-start-tag");
           return null;
         }
-        if (self.open_elements.length) {
-          self.open_elements.pop();
+        if (self.openElements.length) {
+          self.openElements.pop();
           self.mode = InsertionMode.IN_TABLE;
           return ["reprocess", InsertionMode.IN_TABLE, token];
         }
@@ -1555,7 +1606,7 @@ function modeInTableBody(self, token) {
     }
 
     if (name === "table") {
-      const current = self.open_elements.length ? self.open_elements[self.open_elements.length - 1] : null;
+      const current = self.openElements.length ? self.openElements[self.openElements.length - 1] : null;
       if (current && current.name === "template") {
         self._parse_error("unexpected-end-tag", name);
         return null;
@@ -1569,7 +1620,7 @@ function modeInTableBody(self, token) {
         self._parse_error("unexpected-end-tag", name);
         return null;
       }
-      if (current && TABLE_BODY_CONTEXT_TAGS.has(current.name)) self.open_elements.pop();
+      if (current && TABLE_BODY_CONTEXT_TAGS.has(current.name)) self.openElements.pop();
       self.mode = InsertionMode.IN_TABLE;
       return ["reprocess", InsertionMode.IN_TABLE, token];
     }
@@ -1747,19 +1798,19 @@ function modeInFrameset(self, token) {
       return null;
     }
     if (token.kind === Tag.END && token.name === "frameset") {
-      if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "html") {
+      if (self.openElements.length && self.openElements[self.openElements.length - 1].name === "html") {
         self._parse_error("unexpected-end-tag", token.name);
         return null;
       }
-      self.open_elements.pop();
-      if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name !== "frameset") {
+      self.openElements.pop();
+      if (self.openElements.length && self.openElements[self.openElements.length - 1].name !== "frameset") {
         self.mode = InsertionMode.AFTER_FRAMESET;
       }
       return null;
     }
     if (token.kind === Tag.START && token.name === "frame") {
       self._insert_element(token, { push: true });
-      self.open_elements.pop();
+      self.openElements.pop();
       return null;
     }
     if (token.kind === Tag.START && token.name === "noframes") {
@@ -1771,8 +1822,8 @@ function modeInFrameset(self, token) {
   }
 
   if (token instanceof EOFToken) {
-    if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name !== "html") {
-      self._parse_error("expected-closing-tag-but-got-eof", self.open_elements[self.open_elements.length - 1].name);
+    if (self.openElements.length && self.openElements[self.openElements.length - 1].name !== "html") {
+      self._parse_error("expected-closing-tag-but-got-eof", self.openElements[self.openElements.length - 1].name);
     }
     return null;
   }
@@ -1885,19 +1936,19 @@ function modeInSelect(self, token) {
     if (token.kind === Tag.START) {
       if (name === "html") return ["reprocess", InsertionMode.IN_BODY, token];
       if (name === "option") {
-        if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
-          self.open_elements.pop();
+        if (self.openElements.length && self.openElements[self.openElements.length - 1].name === "option") {
+          self.openElements.pop();
         }
         self._reconstruct_active_formatting_elements();
         self._insert_element(token, { push: true });
         return null;
       }
       if (name === "optgroup") {
-        if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
-          self.open_elements.pop();
+        if (self.openElements.length && self.openElements[self.openElements.length - 1].name === "option") {
+          self.openElements.pop();
         }
-        if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "optgroup") {
-          self.open_elements.pop();
+        if (self.openElements.length && self.openElements[self.openElements.length - 1].name === "optgroup") {
+          self.openElements.pop();
         }
         self._reconstruct_active_formatting_elements();
         self._insert_element(token, { push: true });
@@ -1939,11 +1990,11 @@ function modeInSelect(self, token) {
         return null;
       }
       if (name === "hr") {
-        if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
-          self.open_elements.pop();
+        if (self.openElements.length && self.openElements[self.openElements.length - 1].name === "option") {
+          self.openElements.pop();
         }
-        if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "optgroup") {
-          self.open_elements.pop();
+        if (self.openElements.length && self.openElements[self.openElements.length - 1].name === "optgroup") {
+          self.openElements.pop();
         }
         self._reconstruct_active_formatting_elements();
         self._insert_element(token, { push: false });
@@ -1974,19 +2025,19 @@ function modeInSelect(self, token) {
 
     // End tag.
     if (name === "optgroup") {
-      if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
-        self.open_elements.pop();
+      if (self.openElements.length && self.openElements[self.openElements.length - 1].name === "option") {
+        self.openElements.pop();
       }
-      if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "optgroup") {
-        self.open_elements.pop();
+      if (self.openElements.length && self.openElements[self.openElements.length - 1].name === "optgroup") {
+        self.openElements.pop();
       } else {
         self._parse_error("unexpected-end-tag", name);
       }
       return null;
     }
     if (name === "option") {
-      if (self.open_elements.length && self.open_elements[self.open_elements.length - 1].name === "option") {
-        self.open_elements.pop();
+      if (self.openElements.length && self.openElements[self.openElements.length - 1].name === "option") {
+        self.openElements.pop();
       } else {
         self._parse_error("unexpected-end-tag", name);
       }
@@ -2003,9 +2054,9 @@ function modeInSelect(self, token) {
       const fmtIndex = self._find_active_formatting_index(name);
       if (fmtIndex != null) {
         const target = self.active_formatting[fmtIndex].node;
-        if (target && self.open_elements.includes(target) && selectNode) {
-          const selectIndex = self.open_elements.indexOf(selectNode);
-          const targetIndex = self.open_elements.indexOf(target);
+        if (target && self.openElements.includes(target) && selectNode) {
+          const selectIndex = self.openElements.indexOf(selectNode);
+          const targetIndex = self.openElements.indexOf(target);
           if (targetIndex < selectIndex) {
             self._parse_error("unexpected-end-tag", name);
             return null;
@@ -2019,14 +2070,14 @@ function modeInSelect(self, token) {
     if (SELECT_ALLOWED_ELEMENTS.has(name)) {
       let selectIdx = null;
       let targetIdx = null;
-      for (let i = 0; i < self.open_elements.length; i += 1) {
-        const node = self.open_elements[i];
+      for (let i = 0; i < self.openElements.length; i += 1) {
+        const node = self.openElements[i];
         if (node.name === "select" && selectIdx == null) selectIdx = i;
         if (node.name === name) targetIdx = i;
       }
       if (targetIdx != null && (selectIdx == null || targetIdx > selectIdx)) {
-        while (self.open_elements.length) {
-          const popped = self.open_elements.pop();
+        while (self.openElements.length) {
+          const popped = self.openElements.pop();
           if (popped.name === name) break;
         }
       } else {
@@ -2095,7 +2146,7 @@ function modeInTemplate(self, token) {
   }
 
   if (token instanceof EOFToken) {
-    const hasTemplate = self.open_elements.some((node) => node.name === "template");
+    const hasTemplate = self.openElements.some((node) => node.name === "template");
     if (!hasTemplate) return null;
     self._parse_error("expected-closing-tag-but-got-eof", "template");
     self._pop_until_inclusive("template");
@@ -2155,7 +2206,7 @@ export class TreeBuilder {
     this.mode = InsertionMode.INITIAL;
     this.original_mode = null;
     this.table_text_original_mode = null;
-    this.open_elements = [];
+    this.openElements = [];
     this.head_element = null;
     this.form_element = null;
     this.frameset_ok = true;
@@ -2171,7 +2222,7 @@ export class TreeBuilder {
       // Fragment parsing per HTML5 spec
       const root = this._create_element("html", null, {});
       this.document.append_child(root);
-      this.open_elements.push(root);
+      this.openElements.push(root);
 
       const namespace = fragment_context.namespace;
       const contextName = fragment_context.tag_name || fragment_context.tagName || "";
@@ -2182,7 +2233,7 @@ export class TreeBuilder {
         if (namespace === "svg") adjustedName = this._adjust_svg_tag_name(contextName);
         const contextElement = this._create_element(adjustedName, namespace, {});
         root.append_child(contextElement);
-        this.open_elements.push(contextElement);
+        this.openElements.push(contextElement);
         this.fragment_context_element = contextElement;
       }
 
@@ -2211,8 +2262,8 @@ export class TreeBuilder {
 
   _has_element_in_scope(target, terminators = null, checkIntegrationPoints = true) {
     const terms = terminators || DEFAULT_SCOPE_TERMINATORS;
-    for (let idx = this.open_elements.length - 1; idx >= 0; idx -= 1) {
-      const node = this.open_elements[idx];
+    for (let idx = this.openElements.length - 1; idx >= 0; idx -= 1) {
+      const node = this.openElements[idx];
       if (node.name === target) return true;
 
       const ns = node.namespace;
@@ -2230,15 +2281,15 @@ export class TreeBuilder {
   }
 
   _pop_until_inclusive(name) {
-    while (this.open_elements.length) {
-      const node = this.open_elements.pop();
+    while (this.openElements.length) {
+      const node = this.openElements.pop();
       if (node.name === name) break;
     }
   }
 
   _pop_until_any_inclusive(names) {
-    while (this.open_elements.length) {
-      const node = this.open_elements.pop();
+    while (this.openElements.length) {
+      const node = this.openElements.pop();
       if (names.has(node.name)) return;
     }
   }
@@ -2246,7 +2297,7 @@ export class TreeBuilder {
   _close_p_element() {
     if (this._has_element_in_button_scope("p")) {
       this._generate_implied_end_tags("p");
-      if (this.open_elements.length && this.open_elements[this.open_elements.length - 1].name !== "p") {
+      if (this.openElements.length && this.openElements[this.openElements.length - 1].name !== "p") {
         this._parse_error("end-tag-too-early", "p");
       }
       this._pop_until_inclusive("p");
@@ -2260,10 +2311,10 @@ export class TreeBuilder {
   }
 
   _close_element_by_name(name) {
-    let index = this.open_elements.length - 1;
+    let index = this.openElements.length - 1;
     while (index >= 0) {
-      if (this.open_elements[index].name === name) {
-        this.open_elements.splice(index);
+      if (this.openElements[index].name === name) {
+        this.openElements.splice(index);
         return;
       }
       index -= 1;
@@ -2271,12 +2322,12 @@ export class TreeBuilder {
   }
 
   _any_other_end_tag(name) {
-    let index = this.open_elements.length - 1;
+    let index = this.openElements.length - 1;
     while (index >= 0) {
-      const node = this.open_elements[index];
+      const node = this.openElements[index];
       if (node.name === name) {
-        if (index !== this.open_elements.length - 1) this._parse_error("end-tag-too-early");
-        this.open_elements.splice(index);
+        if (index !== this.openElements.length - 1) this._parse_error("end-tag-too-early");
+        this.openElements.splice(index);
         return;
       }
       if (this._is_special_element(node)) {
@@ -2288,10 +2339,10 @@ export class TreeBuilder {
   }
 
   _generate_implied_end_tags(exclude = null) {
-    while (this.open_elements.length) {
-      const node = this.open_elements[this.open_elements.length - 1];
+    while (this.openElements.length) {
+      const node = this.openElements[this.openElements.length - 1];
       if (IMPLIED_END_TAGS.has(node.name) && node.name !== exclude) {
-        this.open_elements.pop();
+        this.openElements.pop();
         continue;
       }
       break;
@@ -2310,46 +2361,43 @@ export class TreeBuilder {
   }
 
   _reset_insertion_mode() {
-    for (let idx = this.open_elements.length - 1; idx >= 0; idx -= 1) {
-      const node = this.open_elements[idx];
-      const name = node.name;
-      if (name === "select") {
-        this.mode = InsertionMode.IN_SELECT;
-        return;
-      }
-      if (name === "td" || name === "th") {
-        this.mode = InsertionMode.IN_CELL;
-        return;
-      }
-      if (name === "tr") {
-        this.mode = InsertionMode.IN_ROW;
-        return;
-      }
-      if (name === "tbody" || name === "tfoot" || name === "thead") {
-        this.mode = InsertionMode.IN_TABLE_BODY;
-        return;
-      }
-      if (name === "caption") {
-        this.mode = InsertionMode.IN_CAPTION;
-        return;
-      }
-      if (name === "table") {
-        this.mode = InsertionMode.IN_TABLE;
-        return;
-      }
-      if (name === "template") {
-        if (this.template_modes.length) {
-          this.mode = this.template_modes[this.template_modes.length - 1];
+    for (let idx = this.openElements.length - 1; idx >= 0; idx -= 1) {
+      const node = this.openElements[idx];
+      const tagId = node.tagId ?? getTagId(node.name);
+      switch (tagId) {
+        case TagId.SELECT:
+          this.mode = InsertionMode.IN_SELECT;
           return;
-        }
-      }
-      if (name === "head") {
-        this.mode = InsertionMode.IN_HEAD;
-        return;
-      }
-      if (name === "html") {
-        this.mode = InsertionMode.IN_BODY;
-        return;
+        case TagId.TD:
+        case TagId.TH:
+          this.mode = InsertionMode.IN_CELL;
+          return;
+        case TagId.TR:
+          this.mode = InsertionMode.IN_ROW;
+          return;
+        case TagId.TBODY:
+        case TagId.TFOOT:
+        case TagId.THEAD:
+          this.mode = InsertionMode.IN_TABLE_BODY;
+          return;
+        case TagId.CAPTION:
+          this.mode = InsertionMode.IN_CAPTION;
+          return;
+        case TagId.TABLE:
+          this.mode = InsertionMode.IN_TABLE;
+          return;
+        case TagId.TEMPLATE:
+          if (this.template_modes.length) {
+            this.mode = this.template_modes[this.template_modes.length - 1];
+            return;
+          }
+          break;
+        case TagId.HEAD:
+          this.mode = InsertionMode.IN_HEAD;
+          return;
+        case TagId.HTML:
+          this.mode = InsertionMode.IN_BODY;
+          return;
       }
     }
     this.mode = InsertionMode.IN_BODY;
@@ -2361,8 +2409,8 @@ export class TreeBuilder {
 
   processToken(token) {
     if (token instanceof DoctypeToken) {
-      if (this.open_elements.length) {
-        const current = this.open_elements[this.open_elements.length - 1];
+      if (this.openElements.length) {
+        const current = this.openElements[this.openElements.length - 1];
         if (current.namespace != null && current.namespace !== "html") {
           this._parse_error("unexpected-doctype");
           return TokenSinkResult.Continue;
@@ -2376,7 +2424,7 @@ export class TreeBuilder {
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const currentNode = this.open_elements.length ? this.open_elements[this.open_elements.length - 1] : null;
+      const currentNode = this.openElements.length ? this.openElements[this.openElements.length - 1] : null;
       const isHtmlNamespace = currentNode == null || currentNode.namespace == null || currentNode.namespace === "html";
 
       let result = null;
@@ -2448,10 +2496,17 @@ export class TreeBuilder {
         return out;
       }
 
-      const [, mode, tokenOverride, forceHtml] = result;
-      this.mode = mode;
-      currentToken = tokenOverride;
-      forceHtmlMode = Boolean(forceHtml);
+      // Handle both Reprocess class and legacy array format
+      if (result instanceof Reprocess) {
+        this.mode = result.mode;
+        currentToken = result.token;
+        forceHtmlMode = result.forceHtml;
+      } else {
+        const [, mode, tokenOverride, forceHtml] = result;
+        this.mode = mode;
+        currentToken = tokenOverride;
+        forceHtmlMode = Boolean(forceHtml);
+      }
     }
   }
 
@@ -2460,7 +2515,7 @@ export class TreeBuilder {
   }
 
   processCharacters(data) {
-    const currentNode = this.open_elements.length ? this.open_elements[this.open_elements.length - 1] : null;
+    const currentNode = this.openElements.length ? this.openElements[this.openElements.length - 1] : null;
     const isHtmlNamespace = currentNode == null || currentNode.namespace == null || currentNode.namespace === "html";
     if (!isHtmlNamespace) return this.processToken(new CharacterToken(data));
     return this.processToken(new CharacterToken(data));
@@ -2511,9 +2566,9 @@ export class TreeBuilder {
       }
     }
 
-    if (!this.open_elements.length) return;
+    if (!this.openElements.length) return;
 
-    const target = this.open_elements[this.open_elements.length - 1];
+    const target = this.openElements[this.openElements.length - 1];
     if (!TABLE_FOSTER_TARGETS.has(target.name) && !isTemplateNode(target)) {
       const children = target.children;
       if (children.length && children[children.length - 1].name === "#text") {
@@ -2538,7 +2593,7 @@ export class TreeBuilder {
   }
 
   _current_node_or_html() {
-    if (this.open_elements.length) return this.open_elements[this.open_elements.length - 1];
+    if (this.openElements.length) return this.openElements[this.openElements.length - 1];
     for (const child of this.document.children) {
       if (child.name === "html") return child;
     }
@@ -2548,7 +2603,7 @@ export class TreeBuilder {
   _create_root(attrs) {
     const node = new Node("html", { attrs: attrs || {}, namespace: "html" });
     this.document.append_child(node);
-    this.open_elements.push(node);
+    this.openElements.push(node);
     return node;
   }
 
@@ -2559,7 +2614,7 @@ export class TreeBuilder {
       const target = this._current_node_or_html();
       const parent = isTemplateNode(target) ? target.templateContent : target;
       parent.append_child(node);
-      if (push) this.open_elements.push(node);
+      if (push) this.openElements.push(node);
       return node;
     }
 
@@ -2567,7 +2622,7 @@ export class TreeBuilder {
     const foster = this._should_foster_parenting(target, { forTag: tag.name });
     const [parent, position] = this._appropriate_insertion_location(null, { foster_parenting: foster });
     this._insert_node_at(parent, position, node);
-    if (push) this.open_elements.push(node);
+    if (push) this.openElements.push(node);
     return node;
   }
 
@@ -2580,7 +2635,7 @@ export class TreeBuilder {
     const htmlNode = this._find_last_on_stack("html");
     const node = new Node("body", { namespace: "html" });
     htmlNode.append_child(node);
-    this.open_elements.push(node);
+    this.openElements.push(node);
   }
 
   _create_element(name, namespace, attrs) {
@@ -2589,7 +2644,7 @@ export class TreeBuilder {
   }
 
   _pop_current() {
-    return this.open_elements.pop();
+    return this.openElements.pop();
   }
 
   _add_missing_attributes(node, attrs) {
@@ -2601,10 +2656,10 @@ export class TreeBuilder {
     node.attrs = existing;
   }
 
-  _remove_from_open_elements(node) {
-    for (let index = 0; index < this.open_elements.length; index += 1) {
-      if (this.open_elements[index] === node) {
-        this.open_elements.splice(index, 1);
+  _remove_from_openElements(node) {
+    for (let index = 0; index < this.openElements.length; index += 1) {
+      if (this.openElements[index] === node) {
+        this.openElements.splice(index, 1);
         return true;
       }
     }
@@ -2686,9 +2741,9 @@ export class TreeBuilder {
   }
 
   _remove_last_open_element_by_name(name) {
-    for (let index = this.open_elements.length - 1; index >= 0; index -= 1) {
-      if (this.open_elements[index].name === name) {
-        this.open_elements.splice(index, 1);
+    for (let index = this.openElements.length - 1; index >= 0; index -= 1) {
+      if (this.openElements[index].name === name) {
+        this.openElements.splice(index, 1);
         return;
       }
     }
@@ -2713,14 +2768,14 @@ export class TreeBuilder {
     if (!this.active_formatting.length) return;
     const lastEntry = this.active_formatting[this.active_formatting.length - 1];
     if (lastEntry === FORMAT_MARKER) return;
-    if (this.open_elements.includes(lastEntry.node)) return;
+    if (this.openElements.includes(lastEntry.node)) return;
 
     let index = this.active_formatting.length - 1;
     while (true) {
       index -= 1;
       if (index < 0) break;
       const entry = this.active_formatting[index];
-      if (entry === FORMAT_MARKER || this.open_elements.includes(entry.node)) {
+      if (entry === FORMAT_MARKER || this.openElements.includes(entry.node)) {
         index += 1;
         break;
       }
@@ -2741,7 +2796,7 @@ export class TreeBuilder {
   }
 
   _adoption_agency(subject) {
-    if (this.open_elements.length && this.open_elements[this.open_elements.length - 1].name === subject) {
+    if (this.openElements.length && this.openElements[this.openElements.length - 1].name === subject) {
       if (!this._has_active_formatting_entry(subject)) {
         this._pop_until_inclusive(subject);
         return;
@@ -2756,7 +2811,7 @@ export class TreeBuilder {
       if (formattingEntry === FORMAT_MARKER) return;
       const formattingElement = formattingEntry.node;
 
-      if (!this.open_elements.includes(formattingElement)) {
+      if (!this.openElements.includes(formattingElement)) {
         this._parse_error("adoption-agency-1.3");
         this._remove_formatting_entry(formattingElementIndex);
         return;
@@ -2767,14 +2822,14 @@ export class TreeBuilder {
         return;
       }
 
-      if (formattingElement !== this.open_elements[this.open_elements.length - 1]) {
+      if (formattingElement !== this.openElements[this.openElements.length - 1]) {
         this._parse_error("adoption-agency-1.3");
       }
 
       let furthestBlock = null;
-      const formattingElementInOpenIndex = this.open_elements.indexOf(formattingElement);
-      for (let i = formattingElementInOpenIndex + 1; i < this.open_elements.length; i += 1) {
-        const node = this.open_elements[i];
+      const formattingElementInOpenIndex = this.openElements.indexOf(formattingElement);
+      for (let i = formattingElementInOpenIndex + 1; i < this.openElements.length; i += 1) {
+        const node = this.openElements[i];
         if (this._is_special_element(node)) {
           furthestBlock = node;
           break;
@@ -2782,8 +2837,8 @@ export class TreeBuilder {
       }
 
       if (!furthestBlock) {
-        while (this.open_elements.length) {
-          const popped = this.open_elements.pop();
+        while (this.openElements.length) {
+          const popped = this.openElements.pop();
           if (popped === formattingElement) break;
         }
         this._remove_formatting_entry(formattingElementIndex);
@@ -2798,8 +2853,8 @@ export class TreeBuilder {
       while (true) {
         innerLoopCounter += 1;
 
-        const nodeIndex = this.open_elements.indexOf(node);
-        node = this.open_elements[nodeIndex - 1];
+        const nodeIndex = this.openElements.indexOf(node);
+        node = this.openElements[nodeIndex - 1];
 
         if (node === formattingElement) break;
 
@@ -2812,16 +2867,16 @@ export class TreeBuilder {
         }
 
         if (nodeFormattingIndex == null) {
-          const idx = this.open_elements.indexOf(node);
-          this.open_elements.splice(idx, 1);
-          node = this.open_elements[idx];
+          const idx = this.openElements.indexOf(node);
+          this.openElements.splice(idx, 1);
+          node = this.openElements[idx];
           continue;
         }
 
         const entry = this.active_formatting[nodeFormattingIndex];
         const newElement = this._create_element(entry.name, entry.node.namespace, entry.attrs);
         entry.node = newElement;
-        this.open_elements[this.open_elements.indexOf(node)] = newElement;
+        this.openElements[this.openElements.indexOf(node)] = newElement;
         node = newElement;
 
         if (lastNode === furthestBlock) bookmark = nodeFormattingIndex + 1;
@@ -2832,7 +2887,7 @@ export class TreeBuilder {
         lastNode = node;
       }
 
-      const commonAncestor = this.open_elements[formattingElementInOpenIndex - 1];
+      const commonAncestor = this.openElements[formattingElementInOpenIndex - 1];
       if (lastNode.parent) lastNode.parent.remove_child(lastNode);
 
       if (this._should_foster_parenting(commonAncestor, { forTag: lastNode.name })) {
@@ -2859,16 +2914,16 @@ export class TreeBuilder {
       bookmark -= 1;
       this.active_formatting.splice(bookmark, 0, entry);
 
-      const fmtOpenIndex = this.open_elements.indexOf(formattingElement);
-      if (fmtOpenIndex !== -1) this.open_elements.splice(fmtOpenIndex, 1);
-      const furthestBlockIndex = this.open_elements.indexOf(furthestBlock);
-      this.open_elements.splice(furthestBlockIndex + 1, 0, newFormattingElement);
+      const fmtOpenIndex = this.openElements.indexOf(formattingElement);
+      if (fmtOpenIndex !== -1) this.openElements.splice(fmtOpenIndex, 1);
+      const furthestBlockIndex = this.openElements.indexOf(furthestBlock);
+      this.openElements.splice(furthestBlockIndex + 1, 0, newFormattingElement);
     }
   }
 
   _find_last_on_stack(name) {
-    for (let idx = this.open_elements.length - 1; idx >= 0; idx -= 1) {
-      const node = this.open_elements[idx];
+    for (let idx = this.openElements.length - 1; idx >= 0; idx -= 1) {
+      const node = this.openElements[idx];
       if (node.name === name) return node;
     }
     return null;
@@ -2886,7 +2941,7 @@ export class TreeBuilder {
       const lastTable = this._find_last_on_stack("table");
       if (
         lastTemplate &&
-        (lastTable == null || this.open_elements.indexOf(lastTemplate) > this.open_elements.indexOf(lastTable))
+        (lastTable == null || this.openElements.indexOf(lastTemplate) > this.openElements.indexOf(lastTable))
       ) {
         return [lastTemplate.templateContent, lastTemplate.templateContent.children.length];
       }
@@ -2905,10 +2960,10 @@ export class TreeBuilder {
   }
 
   _clear_stack_until(names) {
-    while (this.open_elements.length) {
-      const node = this.open_elements[this.open_elements.length - 1];
+    while (this.openElements.length) {
+      const node = this.openElements[this.openElements.length - 1];
       if ((node.namespace == null || node.namespace === "html") && names.has(node.name)) break;
-      this.open_elements.pop();
+      this.openElements.pop();
     }
   }
 
@@ -2926,8 +2981,8 @@ export class TreeBuilder {
 
   _end_table_cell(name) {
     this._generate_implied_end_tags(name);
-    while (this.open_elements.length) {
-      const node = this.open_elements.pop();
+    while (this.openElements.length) {
+      const node = this.openElements.pop();
       if (node.name === name && (node.namespace == null || node.namespace === "html")) break;
     }
     this._clear_active_formatting_up_to_marker();
@@ -2940,8 +2995,8 @@ export class TreeBuilder {
       return false;
     }
     this._generate_implied_end_tags();
-    while (this.open_elements.length) {
-      const node = this.open_elements.pop();
+    while (this.openElements.length) {
+      const node = this.openElements.pop();
       if (node.name === "caption") break;
     }
     this._clear_active_formatting_up_to_marker();
@@ -2951,8 +3006,8 @@ export class TreeBuilder {
 
   _end_tr_element() {
     this._clear_stack_until(TABLE_ROW_CONTEXT_CLEAR_UNTIL);
-    if (this.open_elements.length && this.open_elements[this.open_elements.length - 1].name === "tr") {
-      this.open_elements.pop();
+    if (this.openElements.length && this.openElements[this.openElements.length - 1].name === "tr") {
+      this.openElements.pop();
     }
     if (this.template_modes.length) this.mode = this.template_modes[this.template_modes.length - 1];
     else this.mode = InsertionMode.IN_TABLE_BODY;
@@ -2983,8 +3038,8 @@ export class TreeBuilder {
       return false;
     }
     this._generate_implied_end_tags();
-    while (this.open_elements.length) {
-      const node = this.open_elements.pop();
+    while (this.openElements.length) {
+      const node = this.openElements.pop();
       if (node.name === "table") break;
     }
     this._reset_insertion_mode();
@@ -3005,8 +3060,8 @@ export class TreeBuilder {
 
   _has_any_in_scope(names) {
     const terminators = DEFAULT_SCOPE_TERMINATORS;
-    for (let idx = this.open_elements.length - 1; idx >= 0; idx -= 1) {
-      const node = this.open_elements[idx];
+    for (let idx = this.openElements.length - 1; idx >= 0; idx -= 1) {
+      const node = this.openElements[idx];
       if (names.has(node.name)) return true;
       if ((node.namespace == null || node.namespace === "html") && terminators.has(node.name)) return false;
     }
@@ -3127,7 +3182,7 @@ export class TreeBuilder {
   }
 
   _should_use_foreign_content(token) {
-    const current = this.open_elements[this.open_elements.length - 1];
+    const current = this.openElements[this.openElements.length - 1];
     if (current.namespace == null || current.namespace === "html") return false;
     if (token instanceof EOFToken) return false;
 
@@ -3163,12 +3218,12 @@ export class TreeBuilder {
   }
 
   _pop_until_html_or_integration_point() {
-    while (this.open_elements.length) {
-      const node = this.open_elements[this.open_elements.length - 1];
+    while (this.openElements.length) {
+      const node = this.openElements[this.openElements.length - 1];
       if (node.namespace == null || node.namespace === "html") return;
       if (this._is_html_integration_point(node)) return;
       if (this.fragment_context_element && node === this.fragment_context_element) return;
-      this.open_elements.pop();
+      this.openElements.pop();
     }
   }
 
@@ -3178,7 +3233,7 @@ export class TreeBuilder {
   }
 
   _process_foreign_content(token) {
-    const current = this.open_elements[this.open_elements.length - 1];
+    const current = this.openElements[this.openElements.length - 1];
 
     if (token instanceof CharacterToken) {
       const raw = token.data || "";
@@ -3231,10 +3286,10 @@ export class TreeBuilder {
       return ["reprocess", this.mode, token, true];
     }
 
-    let idx = this.open_elements.length - 1;
+    let idx = this.openElements.length - 1;
     let first = true;
     while (idx >= 0) {
-      const node = this.open_elements[idx];
+      const node = this.openElements[idx];
       const isHtml = node.namespace == null || node.namespace === "html";
       const nameEq = lowerAscii(node.name) === nameLower;
 
@@ -3244,7 +3299,7 @@ export class TreeBuilder {
           return null;
         }
         if (isHtml) return ["reprocess", this.mode, token, true];
-        this.open_elements.splice(idx);
+        this.openElements.splice(idx);
         return null;
       }
 

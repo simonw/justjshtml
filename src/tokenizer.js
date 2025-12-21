@@ -1,8 +1,18 @@
 import { decodeEntitiesInText } from "./entities.js";
 import { CharacterToken, CommentToken, Doctype, DoctypeToken, EOFToken, Tag, TokenSinkResult } from "./tokens.js";
+import { getTagId, TagId, TagCategory, hasCategory } from "./tag_id.js";
 
 function isWhitespace(c) {
-  return c === "\t" || c === "\n" || c === "\f" || c === " " || c === "\r";
+  switch (c) {
+    case "\t":
+    case "\n":
+    case "\f":
+    case " ":
+    case "\r":
+      return true;
+    default:
+      return false;
+  }
 }
 
 function isAsciiAlpha(c) {
@@ -51,8 +61,26 @@ function coerceCommentForXML(text) {
   return text.replaceAll("--", "- -");
 }
 
-const RCDATA_ELEMENTS = new Set(["title", "textarea"]);
-const RAWTEXT_SWITCH_TAGS = new Set(["script", "style", "xmp", "iframe", "noembed", "noframes", "textarea", "title"]);
+// Use tagId for O(1) lookup instead of Set
+function isRcdataElement(tagId) {
+  return tagId === TagId.TITLE || tagId === TagId.TEXTAREA;
+}
+
+function isRawtextSwitchTag(tagId) {
+  switch (tagId) {
+    case TagId.SCRIPT:
+    case TagId.STYLE:
+    case TagId.XMP:
+    case TagId.IFRAME:
+    case TagId.NOEMBED:
+    case TagId.NOFRAMES:
+    case TagId.TEXTAREA:
+    case TagId.TITLE:
+      return true;
+    default:
+      return false;
+  }
+}
 
 export class TokenizerOpts {
   constructor({ initialState = null, initialRawtextTag = null, discardBom = true, xmlCoercion = false } = {}) {
@@ -444,29 +472,31 @@ export class Tokenizer {
   _emitCurrentTag() {
     const name = this.currentTagName.join("");
     const attrs = this.currentTagAttrs;
+    const tagId = getTagId(name);
 
     const tag = this._tagToken;
     tag.kind = this.currentTagKind;
     tag.name = name;
     tag.attrs = attrs;
     tag.selfClosing = this.currentTagSelfClosing;
+    tag.tagId = tagId;
 
     let switchedToRawtext = false;
     if (this.currentTagKind === Tag.START) {
       this.lastStartTagName = name;
 
-      const needsRawtextCheck = RAWTEXT_SWITCH_TAGS.has(name) || name === "plaintext";
+      const needsRawtextCheck = isRawtextSwitchTag(tagId) || tagId === TagId.PLAINTEXT;
       if (needsRawtextCheck) {
-        const stack = this.sink.openElements || this.sink.open_elements || [];
+        const stack = this.sink.openElements || [];
         const currentNode = stack.length ? stack[stack.length - 1] : null;
         const namespace = currentNode ? currentNode.namespace : null;
 
         if (namespace == null || namespace === "html") {
-          if (RCDATA_ELEMENTS.has(name)) {
+          if (isRcdataElement(tagId)) {
             this.state = Tokenizer.RCDATA;
             this.rawtextTagName = name;
             switchedToRawtext = true;
-          } else if (RAWTEXT_SWITCH_TAGS.has(name)) {
+          } else if (isRawtextSwitchTag(tagId)) {
             this.state = Tokenizer.RAWTEXT;
             this.rawtextTagName = name;
             switchedToRawtext = true;
@@ -984,7 +1014,7 @@ export class Tokenizer {
     if (this._consumeIf("[CDATA[")) {
       // CDATA sections are only valid in foreign content (SVG/MathML).
       // Tokenizer consults the current treebuilder stack to decide.
-      const stack = this.sink?.open_elements;
+      const stack = this.sink?.openElements;
       if (Array.isArray(stack) && stack.length) {
         const current = stack[stack.length - 1];
         const ns = current?.namespace ?? null;
