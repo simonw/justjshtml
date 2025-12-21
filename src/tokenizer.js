@@ -240,132 +240,71 @@ export class Tokenizer {
   }
 
   step() {
+    // Direct switch is fastest in modern JS engines due to optimization
     switch (this.state) {
-      case Tokenizer.DATA:
-        return this._stateData();
-      case Tokenizer.TAG_OPEN:
-        return this._stateTagOpen();
-      case Tokenizer.END_TAG_OPEN:
-        return this._stateEndTagOpen();
-      case Tokenizer.TAG_NAME:
-        return this._stateTagName();
-      case Tokenizer.BEFORE_ATTRIBUTE_NAME:
-        return this._stateBeforeAttributeName();
-      case Tokenizer.ATTRIBUTE_NAME:
-        return this._stateAttributeName();
-      case Tokenizer.AFTER_ATTRIBUTE_NAME:
-        return this._stateAfterAttributeName();
-      case Tokenizer.BEFORE_ATTRIBUTE_VALUE:
-        return this._stateBeforeAttributeValue();
-      case Tokenizer.ATTRIBUTE_VALUE_DOUBLE:
-        return this._stateAttributeValueDouble();
-      case Tokenizer.ATTRIBUTE_VALUE_SINGLE:
-        return this._stateAttributeValueSingle();
-      case Tokenizer.ATTRIBUTE_VALUE_UNQUOTED:
-        return this._stateAttributeValueUnquoted();
-      case Tokenizer.AFTER_ATTRIBUTE_VALUE_QUOTED:
-        return this._stateAfterAttributeValueQuoted();
-      case Tokenizer.SELF_CLOSING_START_TAG:
-        return this._stateSelfClosingStartTag();
-      case Tokenizer.MARKUP_DECLARATION_OPEN:
-        return this._stateMarkupDeclarationOpen();
-      case Tokenizer.COMMENT_START:
-        return this._stateCommentStart();
-      case Tokenizer.COMMENT_START_DASH:
-        return this._stateCommentStartDash();
-      case Tokenizer.COMMENT:
-        return this._stateComment();
-      case Tokenizer.COMMENT_END_DASH:
-        return this._stateCommentEndDash();
-      case Tokenizer.COMMENT_END:
-        return this._stateCommentEnd();
-      case Tokenizer.COMMENT_END_BANG:
-        return this._stateCommentEndBang();
-      case Tokenizer.BOGUS_COMMENT:
-        return this._stateBogusComment();
-      case Tokenizer.DOCTYPE:
-        return this._stateDoctype();
-      case Tokenizer.BEFORE_DOCTYPE_NAME:
-        return this._stateBeforeDoctypeName();
-      case Tokenizer.DOCTYPE_NAME:
-        return this._stateDoctypeName();
-      case Tokenizer.AFTER_DOCTYPE_NAME:
-        return this._stateAfterDoctypeName();
-      case Tokenizer.BOGUS_DOCTYPE:
-        return this._stateBogusDoctype();
-      case Tokenizer.AFTER_DOCTYPE_PUBLIC_KEYWORD:
-        return this._stateAfterDoctypePublicKeyword();
-      case Tokenizer.AFTER_DOCTYPE_SYSTEM_KEYWORD:
-        return this._stateAfterDoctypeSystemKeyword();
-      case Tokenizer.BEFORE_DOCTYPE_PUBLIC_IDENTIFIER:
-        return this._stateBeforeDoctypePublicIdentifier();
-      case Tokenizer.DOCTYPE_PUBLIC_IDENTIFIER_DOUBLE_QUOTED:
-        return this._stateDoctypePublicIdentifierDoubleQuoted();
-      case Tokenizer.DOCTYPE_PUBLIC_IDENTIFIER_SINGLE_QUOTED:
-        return this._stateDoctypePublicIdentifierSingleQuoted();
-      case Tokenizer.AFTER_DOCTYPE_PUBLIC_IDENTIFIER:
-        return this._stateAfterDoctypePublicIdentifier();
-      case Tokenizer.BETWEEN_DOCTYPE_PUBLIC_AND_SYSTEM_IDENTIFIERS:
-        return this._stateBetweenDoctypePublicAndSystemIdentifiers();
-      case Tokenizer.BEFORE_DOCTYPE_SYSTEM_IDENTIFIER:
-        return this._stateBeforeDoctypeSystemIdentifier();
-      case Tokenizer.DOCTYPE_SYSTEM_IDENTIFIER_DOUBLE_QUOTED:
-        return this._stateDoctypeSystemIdentifierDoubleQuoted();
-      case Tokenizer.DOCTYPE_SYSTEM_IDENTIFIER_SINGLE_QUOTED:
-        return this._stateDoctypeSystemIdentifierSingleQuoted();
-      case Tokenizer.AFTER_DOCTYPE_SYSTEM_IDENTIFIER:
-        return this._stateAfterDoctypeSystemIdentifier();
-      case Tokenizer.CDATA_SECTION:
-        return this._stateCdataSection();
-      case Tokenizer.CDATA_SECTION_BRACKET:
-        return this._stateCdataSectionBracket();
-      case Tokenizer.CDATA_SECTION_END:
-        return this._stateCdataSectionEnd();
-      case Tokenizer.RCDATA:
-        return this._stateRcdata();
-      case Tokenizer.RCDATA_LESS_THAN_SIGN:
-        return this._stateRcdataLessThanSign();
-      case Tokenizer.RCDATA_END_TAG_OPEN:
-        return this._stateRcdataEndTagOpen();
-      case Tokenizer.RCDATA_END_TAG_NAME:
-        return this._stateRcdataEndTagName();
-      case Tokenizer.RAWTEXT:
-        return this._stateRawtext();
-      case Tokenizer.RAWTEXT_LESS_THAN_SIGN:
-        return this._stateRawtextLessThanSign();
-      case Tokenizer.RAWTEXT_END_TAG_OPEN:
-        return this._stateRawtextEndTagOpen();
-      case Tokenizer.RAWTEXT_END_TAG_NAME:
-        return this._stateRawtextEndTagName();
-      case Tokenizer.PLAINTEXT:
-        return this._statePlaintext();
-      case Tokenizer.SCRIPT_DATA_ESCAPED:
-        return this._stateScriptDataEscaped();
-      case Tokenizer.SCRIPT_DATA_ESCAPED_DASH:
-        return this._stateScriptDataEscapedDash();
-      case Tokenizer.SCRIPT_DATA_ESCAPED_DASH_DASH:
-        return this._stateScriptDataEscapedDashDash();
-      case Tokenizer.SCRIPT_DATA_ESCAPED_LESS_THAN_SIGN:
-        return this._stateScriptDataEscapedLessThanSign();
-      case Tokenizer.SCRIPT_DATA_ESCAPED_END_TAG_OPEN:
-        return this._stateScriptDataEscapedEndTagOpen();
-      case Tokenizer.SCRIPT_DATA_ESCAPED_END_TAG_NAME:
-        return this._stateScriptDataEscapedEndTagName();
-      case Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPE_START:
-        return this._stateScriptDataDoubleEscapeStart();
-      case Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED:
-        return this._stateScriptDataDoubleEscaped();
-      case Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED_DASH:
-        return this._stateScriptDataDoubleEscapedDash();
-      case Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED_DASH_DASH:
-        return this._stateScriptDataDoubleEscapedDashDash();
-      case Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED_LESS_THAN_SIGN:
-        return this._stateScriptDataDoubleEscapedLessThanSign();
-      case Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPE_END:
-        return this._stateScriptDataDoubleEscapeEnd();
+      case 0: return this._stateData();
+      case 1: return this._stateTagOpen();
+      case 2: return this._stateEndTagOpen();
+      case 3: return this._stateTagName();
+      case 4: return this._stateBeforeAttributeName();
+      case 5: return this._stateAttributeName();
+      case 6: return this._stateAfterAttributeName();
+      case 7: return this._stateBeforeAttributeValue();
+      case 8: return this._stateAttributeValueDouble();
+      case 9: return this._stateAttributeValueSingle();
+      case 10: return this._stateAttributeValueUnquoted();
+      case 11: return this._stateAfterAttributeValueQuoted();
+      case 12: return this._stateSelfClosingStartTag();
+      case 13: return this._stateMarkupDeclarationOpen();
+      case 14: return this._stateCommentStart();
+      case 15: return this._stateCommentStartDash();
+      case 16: return this._stateComment();
+      case 17: return this._stateCommentEndDash();
+      case 18: return this._stateCommentEnd();
+      case 19: return this._stateCommentEndBang();
+      case 20: return this._stateBogusComment();
+      case 21: return this._stateDoctype();
+      case 22: return this._stateBeforeDoctypeName();
+      case 23: return this._stateDoctypeName();
+      case 24: return this._stateAfterDoctypeName();
+      case 25: return this._stateBogusDoctype();
+      case 26: return this._stateAfterDoctypePublicKeyword();
+      case 27: return this._stateAfterDoctypeSystemKeyword();
+      case 28: return this._stateBeforeDoctypePublicIdentifier();
+      case 29: return this._stateDoctypePublicIdentifierDoubleQuoted();
+      case 30: return this._stateDoctypePublicIdentifierSingleQuoted();
+      case 31: return this._stateAfterDoctypePublicIdentifier();
+      case 32: return this._stateBetweenDoctypePublicAndSystemIdentifiers();
+      case 33: return this._stateBeforeDoctypeSystemIdentifier();
+      case 34: return this._stateDoctypeSystemIdentifierDoubleQuoted();
+      case 35: return this._stateDoctypeSystemIdentifierSingleQuoted();
+      case 36: return this._stateAfterDoctypeSystemIdentifier();
+      case 37: return this._stateCdataSection();
+      case 38: return this._stateCdataSectionBracket();
+      case 39: return this._stateCdataSectionEnd();
+      case 40: return this._stateRcdata();
+      case 41: return this._stateRcdataLessThanSign();
+      case 42: return this._stateRcdataEndTagOpen();
+      case 43: return this._stateRcdataEndTagName();
+      case 44: return this._stateRawtext();
+      case 45: return this._stateRawtextLessThanSign();
+      case 46: return this._stateRawtextEndTagOpen();
+      case 47: return this._stateRawtextEndTagName();
+      case 48: return this._statePlaintext();
+      case 49: return this._stateScriptDataEscaped();
+      case 50: return this._stateScriptDataEscapedDash();
+      case 51: return this._stateScriptDataEscapedDashDash();
+      case 52: return this._stateScriptDataEscapedLessThanSign();
+      case 53: return this._stateScriptDataEscapedEndTagOpen();
+      case 54: return this._stateScriptDataEscapedEndTagName();
+      case 55: return this._stateScriptDataDoubleEscapeStart();
+      case 56: return this._stateScriptDataDoubleEscaped();
+      case 57: return this._stateScriptDataDoubleEscapedDash();
+      case 58: return this._stateScriptDataDoubleEscapedDashDash();
+      case 59: return this._stateScriptDataDoubleEscapedLessThanSign();
+      case 60: return this._stateScriptDataDoubleEscapeEnd();
       default:
-        // Not yet ported; fall back to DATA semantics to keep the runner usable.
-        this.state = Tokenizer.DATA;
+        this.state = 0;
         return false;
     }
   }
