@@ -1,14 +1,30 @@
+import { getTagId, TagId } from "./tag_id.js";
+
 export class Tag {
   static START = 0;
   static END = 1;
 
-  constructor(kind, name, attrs, selfClosing = false) {
+  constructor(kind, name, attrs, selfClosing = false, tagId = undefined) {
     this.kind = kind;
     this.name = name;
     this.attrs = attrs ?? {};
     this.selfClosing = Boolean(selfClosing);
+    // Compute tagId lazily or use provided value
+    this.tagId = tagId !== undefined ? tagId : getTagId(name);
   }
 }
+
+// Reprocess result - replaces ["reprocess", mode, token, forceHtml] arrays
+export class Reprocess {
+  constructor(mode, token, forceHtml = false) {
+    this.mode = mode;
+    this.token = token;
+    this.forceHtml = forceHtml;
+  }
+}
+
+// Export TagId for convenience
+export { TagId };
 
 export class CharacterToken {
   constructor(data) {

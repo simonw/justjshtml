@@ -15,7 +15,6 @@ export class Node {
     if (name === "template" && (this.namespace == null || this.namespace === "html")) {
       this.templateContent = new Node("#document-fragment", { namespace: null });
     }
-    this.template_content = this.templateContent;
   }
 
   appendChild(node) {
@@ -23,19 +22,11 @@ export class Node {
     node.parent = this;
   }
 
-  append_child(node) {
-    this.appendChild(node);
-  }
-
   removeChild(node) {
     const idx = this.children.indexOf(node);
     if (idx === -1) throw new Error("Node is not a child of this node");
     this.children.splice(idx, 1);
     node.parent = null;
-  }
-
-  remove_child(node) {
-    this.removeChild(node);
   }
 
   insertBefore(node, referenceNode) {
@@ -49,10 +40,6 @@ export class Node {
     node.parent = this;
   }
 
-  insert_before(node, referenceNode) {
-    this.insertBefore(node, referenceNode);
-  }
-
   replaceChild(newNode, oldNode) {
     const idx = this.children.indexOf(oldNode);
     if (idx === -1) throw new Error("Old node is not a child of this node");
@@ -62,16 +49,8 @@ export class Node {
     return oldNode;
   }
 
-  replace_child(newNode, oldNode) {
-    return this.replaceChild(newNode, oldNode);
-  }
-
   hasChildNodes() {
     return this.children.length > 0;
-  }
-
-  has_child_nodes() {
-    return this.hasChildNodes();
   }
 
   get text() {
@@ -97,16 +76,8 @@ export class Node {
     return parts.join(separator);
   }
 
-  to_text(options) {
-    return this.toText(options);
-  }
-
   toHTML(options) {
     return toHTML(this, options);
-  }
-
-  to_html(indent = 0, indentSize = 2, pretty = true) {
-    return this.toHTML({ indent, indentSize, pretty });
   }
 
   query(selector) {
@@ -117,10 +88,6 @@ export class Node {
     return toMarkdown(this);
   }
 
-  to_markdown() {
-    return this.toMarkdown();
-  }
-
   cloneNode(deep = false) {
     const clone = new Node(this.name, {
       attrs: this.attrs ? { ...this.attrs } : {},
@@ -129,15 +96,10 @@ export class Node {
     });
     if (this.templateContent) {
       clone.templateContent = this.templateContent.cloneNode(deep);
-      clone.template_content = clone.templateContent;
     }
     if (deep) {
       for (const child of this.children) clone.appendChild(child.cloneNode(true));
     }
     return clone;
-  }
-
-  clone_node(deep = false) {
-    return this.cloneNode(deep);
   }
 }
