@@ -10,11 +10,6 @@ function isAsciiAlpha(c) {
   return (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
 }
 
-function asciiLower(c) {
-  const code = c.charCodeAt(0);
-  if (code >= 0x41 && code <= 0x5a) return String.fromCharCode(code + 0x20);
-  return c;
-}
 
 function coerceTextForXML(text) {
   if (!text) return text;
@@ -53,6 +48,102 @@ function coerceCommentForXML(text) {
 
 const RCDATA_ELEMENTS = new Set(["title", "textarea"]);
 const RAWTEXT_SWITCH_TAGS = new Set(["script", "style", "xmp", "iframe", "noembed", "noframes", "textarea", "title"]);
+
+// Compact representation of characters that cause state transitions.
+// Each entry is a string of characters that trigger a state change for that state.
+// null means the state has complex logic (all chars potentially change state).
+// These are expanded to lookup tables in the Tokenizer constructor.
+const STATE_CHANGE_CHARS = [
+  "<",        // DATA (0)
+  null,       // TAG_OPEN (1)
+  null,       // END_TAG_OPEN (2)
+  " />",      // TAG_NAME (3)
+  null,       // BEFORE_ATTRIBUTE_NAME (4)
+  " /=>",     // ATTRIBUTE_NAME (5)
+  null,       // AFTER_ATTRIBUTE_NAME (6)
+  null,       // BEFORE_ATTRIBUTE_VALUE (7)
+  "\"&",      // ATTRIBUTE_VALUE_DOUBLE (8)
+  "'&",       // ATTRIBUTE_VALUE_SINGLE (9)
+  " >&",      // ATTRIBUTE_VALUE_UNQUOTED (10)
+  null,       // AFTER_ATTRIBUTE_VALUE_QUOTED (11)
+  null,       // SELF_CLOSING_START_TAG (12)
+  null,       // MARKUP_DECLARATION_OPEN (13)
+  null,       // COMMENT_START (14)
+  null,       // COMMENT_START_DASH (15)
+  "-",        // COMMENT (16)
+  null,       // COMMENT_END_DASH (17)
+  null,       // COMMENT_END (18)
+  null,       // COMMENT_END_BANG (19)
+  ">",        // BOGUS_COMMENT (20)
+  null,       // DOCTYPE (21)
+  null,       // BEFORE_DOCTYPE_NAME (22)
+  " >",       // DOCTYPE_NAME (23)
+  null,       // AFTER_DOCTYPE_NAME (24)
+  ">",        // BOGUS_DOCTYPE (25)
+  null,       // AFTER_DOCTYPE_PUBLIC_KEYWORD (26)
+  null,       // AFTER_DOCTYPE_SYSTEM_KEYWORD (27)
+  null,       // BEFORE_DOCTYPE_PUBLIC_IDENTIFIER (28)
+  "\">",      // DOCTYPE_PUBLIC_IDENTIFIER_DOUBLE_QUOTED (29)
+  "'>",       // DOCTYPE_PUBLIC_IDENTIFIER_SINGLE_QUOTED (30)
+  null,       // AFTER_DOCTYPE_PUBLIC_IDENTIFIER (31)
+  null,       // BETWEEN_DOCTYPE_PUBLIC_AND_SYSTEM_IDENTIFIERS (32)
+  null,       // BEFORE_DOCTYPE_SYSTEM_IDENTIFIER (33)
+  "\">",      // DOCTYPE_SYSTEM_IDENTIFIER_DOUBLE_QUOTED (34)
+  "'>",       // DOCTYPE_SYSTEM_IDENTIFIER_SINGLE_QUOTED (35)
+  null,       // AFTER_DOCTYPE_SYSTEM_IDENTIFIER (36)
+  "]",        // CDATA_SECTION (37)
+  null,       // CDATA_SECTION_BRACKET (38)
+  null,       // CDATA_SECTION_END (39)
+  "<",        // RCDATA (40)
+  null,       // RCDATA_LESS_THAN_SIGN (41)
+  null,       // RCDATA_END_TAG_OPEN (42)
+  null,       // RCDATA_END_TAG_NAME (43)
+  "<",        // RAWTEXT (44)
+  null,       // RAWTEXT_LESS_THAN_SIGN (45)
+  null,       // RAWTEXT_END_TAG_OPEN (46)
+  null,       // RAWTEXT_END_TAG_NAME (47)
+  "",         // PLAINTEXT (48) - nothing changes state
+  null,       // SCRIPT_DATA_ESCAPED (49) - complex NUL handling
+  null,       // SCRIPT_DATA_ESCAPED_DASH (50)
+  null,       // SCRIPT_DATA_ESCAPED_DASH_DASH (51)
+  null,       // SCRIPT_DATA_ESCAPED_LESS_THAN_SIGN (52)
+  null,       // SCRIPT_DATA_ESCAPED_END_TAG_OPEN (53)
+  null,       // SCRIPT_DATA_ESCAPED_END_TAG_NAME (54)
+  null,       // SCRIPT_DATA_DOUBLE_ESCAPE_START (55)
+  null,       // SCRIPT_DATA_DOUBLE_ESCAPED (56) - complex NUL handling
+  null,       // SCRIPT_DATA_DOUBLE_ESCAPED_DASH (57)
+  null,       // SCRIPT_DATA_DOUBLE_ESCAPED_DASH_DASH (58)
+  null,       // SCRIPT_DATA_DOUBLE_ESCAPED_LESS_THAN_SIGN (59)
+  null,       // SCRIPT_DATA_DOUBLE_ESCAPE_END (60)
+];
+
+// Build expanded lookup tables (128 entries for ASCII 0-127).
+// true = character causes state change, false = character stays in state.
+// Entries 0-31 are always true (control chars always need special handling).
+function buildStateTables() {
+  const tables = [];
+  for (let state = 0; state < STATE_CHANGE_CHARS.length; state++) {
+    const chars = STATE_CHANGE_CHARS[state];
+    if (chars === null) {
+      tables.push(null);
+    } else {
+      // Create a 128-entry array for ASCII 0-127
+      const table = new Array(128).fill(false);
+      // Control chars (0-31) always cause state changes
+      for (let i = 0; i < 32; i++) table[i] = true;
+      for (const c of chars) {
+        const code = c.charCodeAt(0);
+        if (code < 128) {
+          table[code] = true;
+        }
+      }
+      tables.push(table);
+    }
+  }
+  return tables;
+}
+
+const STATE_TABLES = buildStateTables();
 
 export class TokenizerOpts {
   constructor({ initialState = null, initialRawtextTag = null, discardBom = true, xmlCoercion = false } = {}) {
@@ -132,6 +223,7 @@ export class Tokenizer {
     this.sink = sink;
     this.opts = opts;
     this.collectErrors = Boolean(collectErrors);
+    this.stateTables = STATE_TABLES;
 
     this.errors = [];
 
@@ -143,25 +235,25 @@ export class Tokenizer {
     this.currentChar = null;
     this.ignoreLF = false;
 
-    this.textBuffer = [];
-    this.currentTagName = [];
+    this.textBuffer = "";
+    this.currentTagName = "";
     this.currentTagAttrs = {};
-    this.currentAttrName = [];
-    this.currentAttrValue = [];
+    this.currentAttrName = "";
+    this.currentAttrValue = "";
     this.currentAttrValueHasAmp = false;
     this.currentTagSelfClosing = false;
     this.currentTagKind = Tag.START;
-    this.currentComment = [];
+    this.currentComment = "";
 
-    this.currentDoctypeName = [];
+    this.currentDoctypeName = "";
     this.currentDoctypePublic = null;
     this.currentDoctypeSystem = null;
     this.currentDoctypeForceQuirks = false;
 
     this.lastStartTagName = null;
     this.rawtextTagName = null;
-    this.tempBuffer = [];
-    this.originalTagName = [];
+    this.tempBuffer = "";
+    this.originalTagName = "";
 
     this._tagToken = new Tag(Tag.START, "", {}, false);
     this._commentToken = new CommentToken("");
@@ -179,24 +271,24 @@ export class Tokenizer {
     this.ignoreLF = false;
     this.errors = [];
 
-    this.textBuffer.length = 0;
-    this.currentTagName.length = 0;
+    this.textBuffer = "";
+    this.currentTagName = "";
     this.currentTagAttrs = {};
-    this.currentAttrName.length = 0;
-    this.currentAttrValue.length = 0;
+    this.currentAttrName = "";
+    this.currentAttrValue = "";
     this.currentAttrValueHasAmp = false;
     this.currentTagSelfClosing = false;
     this.currentTagKind = Tag.START;
-    this.currentComment.length = 0;
+    this.currentComment = "";
 
-    this.currentDoctypeName.length = 0;
+    this.currentDoctypeName = "";
     this.currentDoctypePublic = null;
     this.currentDoctypeSystem = null;
     this.currentDoctypeForceQuirks = false;
 
     this.rawtextTagName = this.opts.initialRawtextTag;
-    this.tempBuffer.length = 0;
-    this.originalTagName.length = 0;
+    this.tempBuffer = "";
+    this.originalTagName = "";
     this.lastStartTagName = null;
 
     if (typeof this.opts.initialState === "number") this.state = this.opts.initialState;
@@ -342,19 +434,27 @@ export class Tokenizer {
     }
   }
 
+  // Only called after _peekChar confirmed the character - just advance and return it.
   _getChar() {
+    return this.buffer[this.pos++];
+  }
+
+  _getString() {
+    // Handle reconsume - return the previous char
     if (this.reconsume) {
       this.reconsume = false;
       return this.currentChar;
     }
 
+    var c = ""
     while (true) {
+      // EOF check
       if (this.pos >= this.length) {
         this.currentChar = null;
         return null;
       }
 
-      let c = this.buffer[this.pos];
+      c = this.buffer[this.pos];
       this.pos += 1;
 
       if (c === "\r") {
@@ -368,8 +468,41 @@ export class Tokenizer {
       }
 
       this.currentChar = c;
-      return c;
+      break;
     }
+
+    // Try to batch multiple characters if state supports it.
+    // Control chars 0-31 (including CR/LF) are always state-change chars in the table,
+    // so batching will stop before them and they'll be handled on the next call.
+    const table = this.stateTables[this.state];
+    if (table !== null) {
+      const code = c.charCodeAt(0);
+      // Only batch if first char is in the "stay" set:
+      // - chars >= 128 are always batchable (non-ASCII text)
+      // - chars 0-127 use table lookup
+      if (code >= 128 || !table[code]) {
+        // First char stays in state - try to grab more
+        const startPos = this.pos - 1;
+
+        // Scan ahead for more characters that stay in this state
+        while (this.pos < this.length) {
+          const nextC = this.buffer[this.pos];
+          const nextCode = nextC.charCodeAt(0);
+          if (nextCode < 128 && table[nextCode]) break;
+          this.pos += 1;
+        }
+
+        // Return substring if we got multiple chars
+        if (this.pos > startPos + 1) {
+          const result = this.buffer.substring(startPos, this.pos);
+          this.currentChar = result[result.length - 1];
+          return result;
+        }
+      }
+    }
+
+    this.currentChar = c;
+    return c;
   }
 
   _reconsumeCurrent() {
@@ -383,13 +516,13 @@ export class Tokenizer {
   }
 
   _appendText(s) {
-    if (s) this.textBuffer.push(s);
+    if (s) this.textBuffer += s;
   }
 
   _flushText() {
-    if (!this.textBuffer.length) return;
-    let data = this.textBuffer.join("");
-    this.textBuffer.length = 0;
+    if (!this.textBuffer) return;
+    let data = this.textBuffer;
+    this.textBuffer = "";
 
     // Per HTML5 spec (and Python port):
     // - decode character references in DATA/RCDATA and similar (< RAWTEXT)
@@ -414,26 +547,25 @@ export class Tokenizer {
   }
 
   _startNewAttribute() {
-    this.currentAttrName.length = 0;
-    this.currentAttrValue.length = 0;
+    this.currentAttrName = "";
+    this.currentAttrValue = "";
     this.currentAttrValueHasAmp = false;
   }
 
   _finishAttribute() {
-    if (!this.currentAttrName.length) return;
-    const name = this.currentAttrName.join("");
-    this.currentAttrName.length = 0;
+    if (!this.currentAttrName) return;
+    const name = this.currentAttrName;
+    this.currentAttrName = "";
 
     if (Object.prototype.hasOwnProperty.call(this.currentTagAttrs, name)) {
       this._emitError("duplicate-attribute");
-      this.currentAttrValue.length = 0;
+      this.currentAttrValue = "";
       this.currentAttrValueHasAmp = false;
       return;
     }
 
-    let value = "";
-    if (this.currentAttrValue.length) value = this.currentAttrValue.join("");
-    this.currentAttrValue.length = 0;
+    let value = this.currentAttrValue;
+    this.currentAttrValue = "";
 
     if (this.currentAttrValueHasAmp) value = decodeEntitiesInText(value, { inAttribute: true });
     this.currentAttrValueHasAmp = false;
@@ -442,7 +574,7 @@ export class Tokenizer {
   }
 
   _emitCurrentTag() {
-    const name = this.currentTagName.join("");
+    const name = this.currentTagName;
     const attrs = this.currentTagAttrs;
 
     const tag = this._tagToken;
@@ -484,10 +616,10 @@ export class Tokenizer {
       switchedToRawtext = true;
     }
 
-    this.currentTagName.length = 0;
+    this.currentTagName = "";
     this.currentTagAttrs = {};
-    this.currentAttrName.length = 0;
-    this.currentAttrValue.length = 0;
+    this.currentAttrName = "";
+    this.currentAttrValue = "";
     this.currentAttrValueHasAmp = false;
     this.currentTagSelfClosing = false;
     this.currentTagKind = Tag.START;
@@ -495,17 +627,17 @@ export class Tokenizer {
   }
 
   _emitComment() {
-    let data = this.currentComment.join("");
-    this.currentComment.length = 0;
+    let data = this.currentComment;
+    this.currentComment = "";
     if (this.opts.xmlCoercion) data = coerceCommentForXML(data);
     this._commentToken.data = data;
     this._emitToken(this._commentToken);
   }
 
   _emitDoctype() {
-    const name = this.currentDoctypeName.length ? this.currentDoctypeName.join("") : null;
-    const publicId = this.currentDoctypePublic != null ? this.currentDoctypePublic.join("") : null;
-    const systemId = this.currentDoctypeSystem != null ? this.currentDoctypeSystem.join("") : null;
+    const name = this.currentDoctypeName || null;
+    const publicId = this.currentDoctypePublic;
+    const systemId = this.currentDoctypeSystem;
 
     const doctype = new Doctype({
       name,
@@ -514,7 +646,7 @@ export class Tokenizer {
       forceQuirks: this.currentDoctypeForceQuirks,
     });
 
-    this.currentDoctypeName.length = 0;
+    this.currentDoctypeName = "";
     this.currentDoctypePublic = null;
     this.currentDoctypeSystem = null;
     this.currentDoctypeForceQuirks = false;
@@ -544,7 +676,7 @@ export class Tokenizer {
   // -----------------
 
   _stateData() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._flushText();
       this._emitToken(new EOFToken());
@@ -562,7 +694,7 @@ export class Tokenizer {
   }
 
   _statePlaintext() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._flushText();
       this._emitToken(new EOFToken());
@@ -578,7 +710,7 @@ export class Tokenizer {
   }
 
   _stateTagOpen() {
-    const c = this._getChar();
+    const c = this._getString();
 
     if (c == null) {
       this._appendText("<");
@@ -599,7 +731,7 @@ export class Tokenizer {
 
     if (c === "?") {
       this._emitError("unexpected-question-mark-instead-of-tag-name");
-      this.currentComment.length = 0;
+      this.currentComment = "";
       this._reconsumeCurrent();
       this.state = Tokenizer.BOGUS_COMMENT;
       return false;
@@ -607,8 +739,8 @@ export class Tokenizer {
 
     if (isAsciiAlpha(c)) {
       this.currentTagKind = Tag.START;
-      this.currentTagName.length = 0;
-      this.currentTagName.push(asciiLower(c));
+      this.currentTagName = "";
+      this.currentTagName += c.toLowerCase();
       this.currentTagAttrs = {};
       this.currentTagSelfClosing = false;
       this.state = Tokenizer.TAG_NAME;
@@ -623,7 +755,7 @@ export class Tokenizer {
   }
 
   _stateEndTagOpen() {
-    const c = this._getChar();
+    const c = this._getString(this.state);
 
     if (c == null) {
       this._emitError("eof-before-tag-name");
@@ -635,8 +767,8 @@ export class Tokenizer {
 
     if (isAsciiAlpha(c)) {
       this.currentTagKind = Tag.END;
-      this.currentTagName.length = 0;
-      this.currentTagName.push(asciiLower(c));
+      this.currentTagName = "";
+      this.currentTagName += c.toLowerCase();
       this.currentTagAttrs = {};
       this.currentTagSelfClosing = false;
       this.state = Tokenizer.TAG_NAME;
@@ -650,14 +782,14 @@ export class Tokenizer {
     }
 
     this._emitError("invalid-first-character-of-tag-name");
-    this.currentComment.length = 0;
+    this.currentComment = "";
     this._reconsumeCurrent();
     this.state = Tokenizer.BOGUS_COMMENT;
     return false;
   }
 
   _stateTagName() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-tag");
       this._emitToken(new EOFToken());
@@ -682,16 +814,16 @@ export class Tokenizer {
 
     if (c === "\0") {
       this._emitError("unexpected-null-character");
-      this.currentTagName.push("\ufffd");
+      this.currentTagName += "\ufffd";
       return false;
     }
 
-    this.currentTagName.push(asciiLower(c));
+    this.currentTagName += c.toLowerCase();
     return false;
   }
 
   _stateBeforeAttributeName() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-tag");
       this._flushText();
@@ -714,11 +846,10 @@ export class Tokenizer {
     if (c === "=") {
       this._emitError("unexpected-equals-sign-before-attribute-name");
       this._startNewAttribute();
-      this.currentAttrName.push("=");
+      this.currentAttrName += "=";
       this.state = Tokenizer.ATTRIBUTE_NAME;
       return false;
     }
-
     this._startNewAttribute();
     this._reconsumeCurrent();
     this.state = Tokenizer.ATTRIBUTE_NAME;
@@ -726,7 +857,7 @@ export class Tokenizer {
   }
 
   _stateAttributeName() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-tag");
       this._flushText();
@@ -759,16 +890,16 @@ export class Tokenizer {
 
     if (c === "\0") {
       this._emitError("unexpected-null-character");
-      this.currentAttrName.push("\ufffd");
+      this.currentAttrName += "\ufffd";
       return false;
     }
 
-    this.currentAttrName.push(asciiLower(c));
+    this.currentAttrName += c.toLowerCase();
     return false;
   }
 
   _stateAfterAttributeName() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-tag");
       this._flushText();
@@ -800,7 +931,7 @@ export class Tokenizer {
   }
 
   _stateBeforeAttributeValue() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-tag");
       this._flushText();
@@ -833,7 +964,7 @@ export class Tokenizer {
   }
 
   _stateAttributeValueDouble() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-tag");
       this._flushText();
@@ -850,15 +981,15 @@ export class Tokenizer {
     if (c === "&") this.currentAttrValueHasAmp = true;
     if (c === "\0") {
       this._emitError("unexpected-null-character");
-      this.currentAttrValue.push("\ufffd");
+      this.currentAttrValue += "\ufffd";
       return false;
     }
-    this.currentAttrValue.push(c);
+    this.currentAttrValue += c;
     return false;
   }
 
   _stateAttributeValueSingle() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-tag");
       this._flushText();
@@ -875,15 +1006,15 @@ export class Tokenizer {
     if (c === "&") this.currentAttrValueHasAmp = true;
     if (c === "\0") {
       this._emitError("unexpected-null-character");
-      this.currentAttrValue.push("\ufffd");
+      this.currentAttrValue += "\ufffd";
       return false;
     }
-    this.currentAttrValue.push(c);
+    this.currentAttrValue += c;
     return false;
   }
 
   _stateAttributeValueUnquoted() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-tag");
       this._flushText();
@@ -907,15 +1038,15 @@ export class Tokenizer {
 
     if (c === "\0") {
       this._emitError("unexpected-null-character");
-      this.currentAttrValue.push("\ufffd");
+      this.currentAttrValue += "\ufffd";
       return false;
     }
-    this.currentAttrValue.push(c);
+    this.currentAttrValue += c;
     return false;
   }
 
   _stateAfterAttributeValueQuoted() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-tag");
       this._flushText();
@@ -945,7 +1076,7 @@ export class Tokenizer {
   }
 
   _stateSelfClosingStartTag() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-tag");
       this._flushText();
@@ -967,13 +1098,13 @@ export class Tokenizer {
 
   _stateMarkupDeclarationOpen() {
     if (this._consumeIf("--")) {
-      this.currentComment.length = 0;
+      this.currentComment = "";
       this.state = Tokenizer.COMMENT_START;
       return false;
     }
 
     if (this._consumeCaseInsensitive("DOCTYPE")) {
-      this.currentDoctypeName.length = 0;
+      this.currentDoctypeName = "";
       this.currentDoctypePublic = null;
       this.currentDoctypeSystem = null;
       this.currentDoctypeForceQuirks = false;
@@ -996,21 +1127,21 @@ export class Tokenizer {
 
       // Treat as bogus comment in HTML context, preserving "[CDATA[" prefix.
       this._emitError("cdata-in-html-content");
-      this.currentComment.length = 0;
-      this.currentComment.push(..."[CDATA[");
+      this.currentComment = "";
+      this.currentComment += "[CDATA[";
       this.state = Tokenizer.BOGUS_COMMENT;
       return false;
     }
 
     this._emitError("incorrectly-opened-comment");
-    this.currentComment.length = 0;
+    this.currentComment = "";
     this.state = Tokenizer.BOGUS_COMMENT;
     return false;
   }
 
   _stateCommentStart() {
     const replacement = "\ufffd";
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-comment");
       this._emitComment();
@@ -1032,9 +1163,9 @@ export class Tokenizer {
 
     if (c === "\0") {
       this._emitError("unexpected-null-character");
-      this.currentComment.push(replacement);
+      this.currentComment += replacement;
     } else {
-      this.currentComment.push(c);
+      this.currentComment += c;
     }
     this.state = Tokenizer.COMMENT;
     return false;
@@ -1042,7 +1173,7 @@ export class Tokenizer {
 
   _stateCommentStartDash() {
     const replacement = "\ufffd";
-    const c = this._getChar();
+    const c = this._getString(this.state);
     if (c == null) {
       this._emitError("eof-in-comment");
       this._emitComment();
@@ -1064,9 +1195,9 @@ export class Tokenizer {
 
     if (c === "\0") {
       this._emitError("unexpected-null-character");
-      this.currentComment.push("-", replacement);
+      this.currentComment += "-" + replacement;
     } else {
-      this.currentComment.push("-", c);
+      this.currentComment += "-" + c;
     }
     this.state = Tokenizer.COMMENT;
     return false;
@@ -1074,7 +1205,7 @@ export class Tokenizer {
 
   _stateComment() {
     const replacement = "\ufffd";
-    const c = this._getChar();
+    const c = this._getString(this.state);
     if (c == null) {
       this._emitError("eof-in-comment");
       this._emitComment();
@@ -1089,17 +1220,19 @@ export class Tokenizer {
 
     if (c === "\0") {
       this._emitError("unexpected-null-character");
-      this.currentComment.push(replacement);
+      this.currentComment += replacement;
+      this.state = Tokenizer.COMMENT;
       return false;
     }
 
-    this.currentComment.push(c);
+    this.currentComment += c;
+    this.state = Tokenizer.COMMENT;
     return false;
   }
 
   _stateCommentEndDash() {
     const replacement = "\ufffd";
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-comment");
       this._emitComment();
@@ -1114,19 +1247,19 @@ export class Tokenizer {
 
     if (c === "\0") {
       this._emitError("unexpected-null-character");
-      this.currentComment.push("-", replacement);
+      this.currentComment += "-" + replacement;
       this.state = Tokenizer.COMMENT;
       return false;
     }
 
-    this.currentComment.push("-", c);
+    this.currentComment += "-" + c;
     this.state = Tokenizer.COMMENT;
     return false;
   }
 
   _stateCommentEnd() {
     const replacement = "\ufffd";
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-comment");
       this._emitComment();
@@ -1146,26 +1279,26 @@ export class Tokenizer {
     }
 
     if (c === "-") {
-      this.currentComment.push("-");
+      this.currentComment += "-";
       return false;
     }
 
     if (c === "\0") {
       this._emitError("unexpected-null-character");
-      this.currentComment.push("-", "-", replacement);
+      this.currentComment += "--" + replacement;
       this.state = Tokenizer.COMMENT;
       return false;
     }
 
     this._emitError("incorrectly-closed-comment");
-    this.currentComment.push("-", "-", c);
+    this.currentComment += "--" + c;
     this.state = Tokenizer.COMMENT;
     return false;
   }
 
   _stateCommentEndBang() {
     const replacement = "\ufffd";
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-comment");
       this._emitComment();
@@ -1174,7 +1307,7 @@ export class Tokenizer {
     }
 
     if (c === "-") {
-      this.currentComment.push("-", "-", "!");
+      this.currentComment += "--!";
       this.state = Tokenizer.COMMENT_END_DASH;
       return false;
     }
@@ -1188,19 +1321,19 @@ export class Tokenizer {
 
     if (c === "\0") {
       this._emitError("unexpected-null-character");
-      this.currentComment.push("-", "-", "!", replacement);
+      this.currentComment += "--!" + replacement;
       this.state = Tokenizer.COMMENT;
       return false;
     }
 
-    this.currentComment.push("-", "-", "!", c);
+    this.currentComment += "--!" + c;
     this.state = Tokenizer.COMMENT;
     return false;
   }
 
   _stateBogusComment() {
     const replacement = "\ufffd";
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitComment();
       this._emitToken(new EOFToken());
@@ -1213,13 +1346,13 @@ export class Tokenizer {
       return false;
     }
 
-    if (c === "\0") this.currentComment.push(replacement);
-    else this.currentComment.push(c);
+    if (c === "\0") this.currentComment += replacement;
+    else this.currentComment += c;
     return false;
   }
 
   _stateDoctype() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._emitError("eof-in-doctype");
       this.currentDoctypeForceQuirks = true;
@@ -1251,7 +1384,7 @@ export class Tokenizer {
     // Skip whitespace
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString(this.state);
       if (c == null) {
         this._emitError("eof-in-doctype-name");
         this.currentDoctypeForceQuirks = true;
@@ -1267,12 +1400,11 @@ export class Tokenizer {
         this.state = Tokenizer.DATA;
         return false;
       }
-      if (c >= "A" && c <= "Z") this.currentDoctypeName.push(String.fromCharCode(c.charCodeAt(0) + 32));
-      else if (c === "\0") {
+      if (c === "\0") {
         this._emitError("unexpected-null-character");
-        this.currentDoctypeName.push("\ufffd");
+        this.currentDoctypeName += "\ufffd";
       } else {
-        this.currentDoctypeName.push(c);
+        this.currentDoctypeName += c.toLowerCase();
       }
       this.state = Tokenizer.DOCTYPE_NAME;
       return false;
@@ -1282,7 +1414,7 @@ export class Tokenizer {
   _stateDoctypeName() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString(this.state);
       if (c == null) {
         this._emitError("eof-in-doctype-name");
         this.currentDoctypeForceQuirks = true;
@@ -1299,16 +1431,12 @@ export class Tokenizer {
         this.state = Tokenizer.DATA;
         return false;
       }
-      if (c >= "A" && c <= "Z") {
-        this.currentDoctypeName.push(String.fromCharCode(c.charCodeAt(0) + 32));
-        continue;
-      }
       if (c === "\0") {
         this._emitError("unexpected-null-character");
-        this.currentDoctypeName.push("\ufffd");
+        this.currentDoctypeName += "\ufffd";
         continue;
       }
-      this.currentDoctypeName.push(c);
+      this.currentDoctypeName += c.toLowerCase();
     }
   }
 
@@ -1323,7 +1451,7 @@ export class Tokenizer {
     }
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString(this.state);
       if (c == null) {
         this._emitError("eof-in-doctype");
         this.currentDoctypeForceQuirks = true;
@@ -1348,7 +1476,7 @@ export class Tokenizer {
   _stateAfterDoctypePublicKeyword() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString(this.state);
       if (c == null) {
         this._emitError("missing-quote-before-doctype-public-identifier");
         this.currentDoctypeForceQuirks = true;
@@ -1362,13 +1490,13 @@ export class Tokenizer {
       }
       if (c === '"') {
         this._emitError("missing-whitespace-before-doctype-public-identifier");
-        this.currentDoctypePublic = [];
+        this.currentDoctypePublic = "";
         this.state = Tokenizer.DOCTYPE_PUBLIC_IDENTIFIER_DOUBLE_QUOTED;
         return false;
       }
       if (c === "'") {
         this._emitError("missing-whitespace-before-doctype-public-identifier");
-        this.currentDoctypePublic = [];
+        this.currentDoctypePublic = "";
         this.state = Tokenizer.DOCTYPE_PUBLIC_IDENTIFIER_SINGLE_QUOTED;
         return false;
       }
@@ -1390,7 +1518,7 @@ export class Tokenizer {
   _stateAfterDoctypeSystemKeyword() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c == null) {
         this._emitError("missing-quote-before-doctype-system-identifier");
         this.currentDoctypeForceQuirks = true;
@@ -1404,13 +1532,13 @@ export class Tokenizer {
       }
       if (c === '"') {
         this._emitError("missing-whitespace-after-doctype-public-identifier");
-        this.currentDoctypeSystem = [];
+        this.currentDoctypeSystem = "";
         this.state = Tokenizer.DOCTYPE_SYSTEM_IDENTIFIER_DOUBLE_QUOTED;
         return false;
       }
       if (c === "'") {
         this._emitError("missing-whitespace-after-doctype-public-identifier");
-        this.currentDoctypeSystem = [];
+        this.currentDoctypeSystem = "";
         this.state = Tokenizer.DOCTYPE_SYSTEM_IDENTIFIER_SINGLE_QUOTED;
         return false;
       }
@@ -1432,7 +1560,7 @@ export class Tokenizer {
   _stateBeforeDoctypePublicIdentifier() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c == null) {
         this._emitError("missing-doctype-public-identifier");
         this.currentDoctypeForceQuirks = true;
@@ -1442,12 +1570,12 @@ export class Tokenizer {
       }
       if (c === "\t" || c === "\n" || c === "\f" || c === " ") continue;
       if (c === '"') {
-        this.currentDoctypePublic = [];
+        this.currentDoctypePublic = "";
         this.state = Tokenizer.DOCTYPE_PUBLIC_IDENTIFIER_DOUBLE_QUOTED;
         return false;
       }
       if (c === "'") {
-        this.currentDoctypePublic = [];
+        this.currentDoctypePublic = "";
         this.state = Tokenizer.DOCTYPE_PUBLIC_IDENTIFIER_SINGLE_QUOTED;
         return false;
       }
@@ -1469,7 +1597,7 @@ export class Tokenizer {
   _stateDoctypePublicIdentifierDoubleQuoted() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c == null) {
         this._emitError("eof-in-doctype-public-identifier");
         this.currentDoctypeForceQuirks = true;
@@ -1483,7 +1611,7 @@ export class Tokenizer {
       }
       if (c === "\0") {
         this._emitError("unexpected-null-character");
-        this.currentDoctypePublic.push("\ufffd");
+        this.currentDoctypePublic += "\ufffd";
         continue;
       }
       if (c === ">") {
@@ -1493,14 +1621,14 @@ export class Tokenizer {
         this.state = Tokenizer.DATA;
         return false;
       }
-      this.currentDoctypePublic.push(c);
+      this.currentDoctypePublic += c;
     }
   }
 
   _stateDoctypePublicIdentifierSingleQuoted() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c == null) {
         this._emitError("eof-in-doctype-public-identifier");
         this.currentDoctypeForceQuirks = true;
@@ -1514,7 +1642,7 @@ export class Tokenizer {
       }
       if (c === "\0") {
         this._emitError("unexpected-null-character");
-        this.currentDoctypePublic.push("\ufffd");
+        this.currentDoctypePublic += "\ufffd";
         continue;
       }
       if (c === ">") {
@@ -1524,14 +1652,14 @@ export class Tokenizer {
         this.state = Tokenizer.DATA;
         return false;
       }
-      this.currentDoctypePublic.push(c);
+      this.currentDoctypePublic += c;
     }
   }
 
   _stateAfterDoctypePublicIdentifier() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c == null) {
         this._emitError("missing-whitespace-between-doctype-public-and-system-identifiers");
         this.currentDoctypeForceQuirks = true;
@@ -1550,13 +1678,13 @@ export class Tokenizer {
       }
       if (c === '"') {
         this._emitError("missing-whitespace-between-doctype-public-and-system-identifiers");
-        this.currentDoctypeSystem = [];
+        this.currentDoctypeSystem = "";
         this.state = Tokenizer.DOCTYPE_SYSTEM_IDENTIFIER_DOUBLE_QUOTED;
         return false;
       }
       if (c === "'") {
         this._emitError("missing-whitespace-between-doctype-public-and-system-identifiers");
-        this.currentDoctypeSystem = [];
+        this.currentDoctypeSystem = "";
         this.state = Tokenizer.DOCTYPE_SYSTEM_IDENTIFIER_SINGLE_QUOTED;
         return false;
       }
@@ -1571,7 +1699,7 @@ export class Tokenizer {
   _stateBetweenDoctypePublicAndSystemIdentifiers() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c == null) {
         this._emitError("missing-quote-before-doctype-system-identifier");
         this.currentDoctypeForceQuirks = true;
@@ -1586,12 +1714,12 @@ export class Tokenizer {
         return false;
       }
       if (c === '"') {
-        this.currentDoctypeSystem = [];
+        this.currentDoctypeSystem = "";
         this.state = Tokenizer.DOCTYPE_SYSTEM_IDENTIFIER_DOUBLE_QUOTED;
         return false;
       }
       if (c === "'") {
-        this.currentDoctypeSystem = [];
+        this.currentDoctypeSystem = "";
         this.state = Tokenizer.DOCTYPE_SYSTEM_IDENTIFIER_SINGLE_QUOTED;
         return false;
       }
@@ -1606,7 +1734,7 @@ export class Tokenizer {
   _stateBeforeDoctypeSystemIdentifier() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c == null) {
         this._emitError("missing-doctype-system-identifier");
         this.currentDoctypeForceQuirks = true;
@@ -1616,12 +1744,12 @@ export class Tokenizer {
       }
       if (c === "\t" || c === "\n" || c === "\f" || c === " ") continue;
       if (c === '"') {
-        this.currentDoctypeSystem = [];
+        this.currentDoctypeSystem = "";
         this.state = Tokenizer.DOCTYPE_SYSTEM_IDENTIFIER_DOUBLE_QUOTED;
         return false;
       }
       if (c === "'") {
-        this.currentDoctypeSystem = [];
+        this.currentDoctypeSystem = "";
         this.state = Tokenizer.DOCTYPE_SYSTEM_IDENTIFIER_SINGLE_QUOTED;
         return false;
       }
@@ -1643,7 +1771,7 @@ export class Tokenizer {
   _stateDoctypeSystemIdentifierDoubleQuoted() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c == null) {
         this._emitError("eof-in-doctype-system-identifier");
         this.currentDoctypeForceQuirks = true;
@@ -1657,7 +1785,7 @@ export class Tokenizer {
       }
       if (c === "\0") {
         this._emitError("unexpected-null-character");
-        this.currentDoctypeSystem.push("\ufffd");
+        this.currentDoctypeSystem += "\ufffd";
         continue;
       }
       if (c === ">") {
@@ -1667,14 +1795,14 @@ export class Tokenizer {
         this.state = Tokenizer.DATA;
         return false;
       }
-      this.currentDoctypeSystem.push(c);
+      this.currentDoctypeSystem += c;
     }
   }
 
   _stateDoctypeSystemIdentifierSingleQuoted() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c == null) {
         this._emitError("eof-in-doctype-system-identifier");
         this.currentDoctypeForceQuirks = true;
@@ -1688,7 +1816,7 @@ export class Tokenizer {
       }
       if (c === "\0") {
         this._emitError("unexpected-null-character");
-        this.currentDoctypeSystem.push("\ufffd");
+        this.currentDoctypeSystem += "\ufffd";
         continue;
       }
       if (c === ">") {
@@ -1698,14 +1826,14 @@ export class Tokenizer {
         this.state = Tokenizer.DATA;
         return false;
       }
-      this.currentDoctypeSystem.push(c);
+      this.currentDoctypeSystem += c;
     }
   }
 
   _stateAfterDoctypeSystemIdentifier() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c == null) {
         this._emitError("eof-in-doctype");
         this.currentDoctypeForceQuirks = true;
@@ -1729,7 +1857,7 @@ export class Tokenizer {
   _stateBogusDoctype() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString(this.state);
       if (c == null) {
         this._emitDoctype();
         this._emitToken(new EOFToken());
@@ -1747,7 +1875,7 @@ export class Tokenizer {
     // Consume characters until we see ']'.
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c == null) {
         this._emitError("eof-in-cdata");
         this._flushText();
@@ -1763,7 +1891,7 @@ export class Tokenizer {
   }
 
   _stateCdataSectionBracket() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c === "]") {
       this.state = Tokenizer.CDATA_SECTION_END;
       return false;
@@ -1782,7 +1910,7 @@ export class Tokenizer {
   }
 
   _stateCdataSectionEnd() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c === ">") {
       this._flushText();
       this.state = Tokenizer.DATA;
@@ -1807,7 +1935,7 @@ export class Tokenizer {
   }
 
   _stateRcdata() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._flushText();
       this._emitToken(new EOFToken());
@@ -1831,10 +1959,10 @@ export class Tokenizer {
   }
 
   _stateRcdataLessThanSign() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c === "/") {
-      this.currentTagName.length = 0;
-      this.originalTagName.length = 0;
+      this.currentTagName = "";
+      this.originalTagName = "";
       this.state = Tokenizer.RCDATA_END_TAG_OPEN;
       return false;
     }
@@ -1845,14 +1973,14 @@ export class Tokenizer {
   }
 
   _stateRcdataEndTagOpen() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c != null && isAsciiAlpha(c)) {
-      this.currentTagName.push(asciiLower(c));
-      this.originalTagName.push(c);
+      this.currentTagName += c.toLowerCase();
+      this.originalTagName += c;
       this.state = Tokenizer.RCDATA_END_TAG_NAME;
       return false;
     }
-    this.textBuffer.push("<", "/");
+    this.textBuffer += "</";
     this._reconsumeCurrent();
     this.state = Tokenizer.RCDATA;
     return false;
@@ -1861,22 +1989,22 @@ export class Tokenizer {
   _stateRcdataEndTagName() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c != null && isAsciiAlpha(c)) {
-        this.currentTagName.push(asciiLower(c));
-        this.originalTagName.push(c);
+        this.currentTagName += c.toLowerCase();
+        this.originalTagName += c;
         continue;
       }
 
-      const tagName = this.currentTagName.join("");
+      const tagName = this.currentTagName;
       if (tagName === this.rawtextTagName) {
         if (c === ">") {
           this._flushText();
           this._emitToken(new Tag(Tag.END, tagName, {}, false));
-          this.state = Tokenizer.DATA;
           this.rawtextTagName = null;
-          this.currentTagName.length = 0;
-          this.originalTagName.length = 0;
+          this.currentTagName = "";
+          this.originalTagName = "";
+          this.state = Tokenizer.DATA;
           return false;
         }
         if (isWhitespace(c)) {
@@ -1896,19 +2024,19 @@ export class Tokenizer {
       }
 
       if (c == null) {
-        this.textBuffer.push("<", "/");
+        this.textBuffer += "</";
         for (const ch of this.originalTagName) this._appendText(ch);
-        this.currentTagName.length = 0;
-        this.originalTagName.length = 0;
+        this.currentTagName = "";
+        this.originalTagName = "";
         this._flushText();
         this._emitToken(new EOFToken());
         return true;
       }
 
-      this.textBuffer.push("<", "/");
+      this.textBuffer += "</";
       for (const ch of this.originalTagName) this._appendText(ch);
-      this.currentTagName.length = 0;
-      this.originalTagName.length = 0;
+      this.currentTagName = "";
+      this.originalTagName = "";
       this._reconsumeCurrent();
       this.state = Tokenizer.RCDATA;
       return false;
@@ -1916,7 +2044,7 @@ export class Tokenizer {
   }
 
   _stateRawtext() {
-    const c = this._getChar();
+    const c = this._getString(this.state);
     if (c == null) {
       this._flushText();
       this._emitToken(new EOFToken());
@@ -1933,7 +2061,7 @@ export class Tokenizer {
         const next2 = this._peekChar(1);
         const next3 = this._peekChar(2);
         if (next1 === "!" && next2 === "-" && next3 === "-") {
-          this.textBuffer.push("<", "!", "-", "-");
+          this.textBuffer += "<!--";
           this._getChar();
           this._getChar();
           this._getChar();
@@ -1945,14 +2073,15 @@ export class Tokenizer {
       return false;
     }
     this._appendText(c);
+    this.state = Tokenizer.RAWTEXT;
     return false;
   }
 
   _stateRawtextLessThanSign() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c === "/") {
-      this.currentTagName.length = 0;
-      this.originalTagName.length = 0;
+      this.currentTagName = "";
+      this.originalTagName = "";
       this.state = Tokenizer.RAWTEXT_END_TAG_OPEN;
       return false;
     }
@@ -1963,14 +2092,14 @@ export class Tokenizer {
   }
 
   _stateRawtextEndTagOpen() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c != null && isAsciiAlpha(c)) {
-      this.currentTagName.push(asciiLower(c));
-      this.originalTagName.push(c);
+      this.currentTagName += c.toLowerCase();
+      this.originalTagName += c;
       this.state = Tokenizer.RAWTEXT_END_TAG_NAME;
       return false;
     }
-    this.textBuffer.push("<", "/");
+    this.textBuffer += "</";
     this._reconsumeCurrent();
     this.state = Tokenizer.RAWTEXT;
     return false;
@@ -1979,22 +2108,22 @@ export class Tokenizer {
   _stateRawtextEndTagName() {
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const c = this._getChar();
+      const c = this._getString();
       if (c != null && isAsciiAlpha(c)) {
-        this.currentTagName.push(asciiLower(c));
-        this.originalTagName.push(c);
+        this.currentTagName += c.toLowerCase();
+        this.originalTagName += c;
         continue;
       }
 
-      const tagName = this.currentTagName.join("");
+      const tagName = this.currentTagName;
       if (tagName === this.rawtextTagName) {
         if (c === ">") {
           this._flushText();
           this._emitToken(new Tag(Tag.END, tagName, {}, false));
-          this.state = Tokenizer.DATA;
           this.rawtextTagName = null;
-          this.currentTagName.length = 0;
-          this.originalTagName.length = 0;
+          this.currentTagName = "";
+          this.originalTagName = "";
+          this.state = Tokenizer.DATA;
           return false;
         }
         if (isWhitespace(c)) {
@@ -2014,19 +2143,19 @@ export class Tokenizer {
       }
 
       if (c == null) {
-        this.textBuffer.push("<", "/");
+        this.textBuffer += "</";
         for (const ch of this.originalTagName) this._appendText(ch);
-        this.currentTagName.length = 0;
-        this.originalTagName.length = 0;
+        this.currentTagName = "";
+        this.originalTagName = "";
         this._flushText();
         this._emitToken(new EOFToken());
         return true;
       }
 
-      this.textBuffer.push("<", "/");
+      this.textBuffer += "</";
       for (const ch of this.originalTagName) this._appendText(ch);
-      this.currentTagName.length = 0;
-      this.originalTagName.length = 0;
+      this.currentTagName = "";
+      this.originalTagName = "";
       this._reconsumeCurrent();
       this.state = Tokenizer.RAWTEXT;
       return false;
@@ -2034,7 +2163,7 @@ export class Tokenizer {
   }
 
   _stateScriptDataEscaped() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._flushText();
       this._emitToken(new EOFToken());
@@ -2059,7 +2188,7 @@ export class Tokenizer {
   }
 
   _stateScriptDataEscapedDash() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._flushText();
       this._emitToken(new EOFToken());
@@ -2086,7 +2215,7 @@ export class Tokenizer {
   }
 
   _stateScriptDataEscapedDashDash() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._flushText();
       this._emitToken(new EOFToken());
@@ -2094,6 +2223,7 @@ export class Tokenizer {
     }
     if (c === "-") {
       this._appendText("-");
+      this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED_DASH_DASH;
       return false;
     }
     if (c === "<") {
@@ -2118,14 +2248,14 @@ export class Tokenizer {
   }
 
   _stateScriptDataEscapedLessThanSign() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c === "/") {
-      this.tempBuffer.length = 0;
+      this.tempBuffer = "";
       this.state = Tokenizer.SCRIPT_DATA_ESCAPED_END_TAG_OPEN;
       return false;
     }
     if (c != null && isAsciiAlpha(c)) {
-      this.tempBuffer.length = 0;
+      this.tempBuffer = "";
       this._appendText("<");
       this._reconsumeCurrent();
       this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPE_START;
@@ -2138,30 +2268,30 @@ export class Tokenizer {
   }
 
   _stateScriptDataEscapedEndTagOpen() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c != null && isAsciiAlpha(c)) {
-      this.currentTagName.length = 0;
-      this.originalTagName.length = 0;
+      this.currentTagName = "";
+      this.originalTagName = "";
       this._reconsumeCurrent();
       this.state = Tokenizer.SCRIPT_DATA_ESCAPED_END_TAG_NAME;
       return false;
     }
-    this.textBuffer.push("<", "/");
+    this.textBuffer += "</";
     this._reconsumeCurrent();
     this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
     return false;
   }
 
   _stateScriptDataEscapedEndTagName() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c != null && isAsciiAlpha(c)) {
-      this.currentTagName.push(asciiLower(c));
-      this.originalTagName.push(c);
-      this.tempBuffer.push(c);
+      this.currentTagName += c.toLowerCase();
+      this.originalTagName += c;
+      this.tempBuffer += c;
       return false;
     }
 
-    const tagName = this.currentTagName.join("");
+    const tagName = this.currentTagName;
     const isAppropriate = tagName === this.rawtextTagName;
 
     if (isAppropriate) {
@@ -2182,36 +2312,40 @@ export class Tokenizer {
       if (c === ">") {
         this._flushText();
         this._emitToken(new Tag(Tag.END, tagName, {}, false));
-        this.state = Tokenizer.DATA;
         this.rawtextTagName = null;
-        this.currentTagName.length = 0;
-        this.originalTagName.length = 0;
-        this.tempBuffer.length = 0;
+        this.currentTagName = "";
+        this.originalTagName = "";
+        this.tempBuffer = "";
+        this.state = Tokenizer.DATA;
         return false;
       }
     }
 
-    this.textBuffer.push("<", "/");
+    this.textBuffer += "</";
     for (const ch of this.tempBuffer) this._appendText(ch);
-    this.currentTagName.length = 0;
-    this.originalTagName.length = 0;
-    this.tempBuffer.length = 0;
+    this.currentTagName = "";
+    this.originalTagName = "";
+    this.tempBuffer = "";
     this._reconsumeCurrent();
     this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
     return false;
   }
 
   _stateScriptDataDoubleEscapeStart() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f" || c === "/" || c === ">") {
-      const temp = this.tempBuffer.join("").toLowerCase();
-      if (temp === "script") this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED;
-      else this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+      const temp = this.tempBuffer.toLowerCase();
       this._appendText(c);
-      return false;
+      if (temp === "script") {
+        this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED;
+        return false;
+      } else {
+        this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+        return false;
+      }
     }
     if (c != null && isAsciiAlpha(c)) {
-      this.tempBuffer.push(c);
+      this.tempBuffer += c;
       this._appendText(c);
       return false;
     }
@@ -2221,7 +2355,7 @@ export class Tokenizer {
   }
 
   _stateScriptDataDoubleEscaped() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._flushText();
       this._emitToken(new EOFToken());
@@ -2247,7 +2381,7 @@ export class Tokenizer {
   }
 
   _stateScriptDataDoubleEscapedDash() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._flushText();
       this._emitToken(new EOFToken());
@@ -2275,7 +2409,7 @@ export class Tokenizer {
   }
 
   _stateScriptDataDoubleEscapedDashDash() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c == null) {
       this._flushText();
       this._emitToken(new EOFToken());
@@ -2307,15 +2441,15 @@ export class Tokenizer {
   }
 
   _stateScriptDataDoubleEscapedLessThanSign() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c === "/") {
-      this.tempBuffer.length = 0;
+      this.tempBuffer = "";
       this._appendText("/");
       this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPE_END;
       return false;
     }
     if (c != null && isAsciiAlpha(c)) {
-      this.tempBuffer.length = 0;
+      this.tempBuffer = "";
       this._reconsumeCurrent();
       this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPE_START;
       return false;
@@ -2326,16 +2460,21 @@ export class Tokenizer {
   }
 
   _stateScriptDataDoubleEscapeEnd() {
-    const c = this._getChar();
+    const c = this._getString();
     if (c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f" || c === "/" || c === ">") {
-      const temp = this.tempBuffer.join("").toLowerCase();
-      if (temp === "script") this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
-      else this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED;
+      const temp = this.tempBuffer.toLowerCase();
       this._appendText(c);
-      return false;
+      // No tail call: next state depends on runtime condition
+      if (temp === "script") {
+        this.state = Tokenizer.SCRIPT_DATA_ESCAPED;
+        return false;
+      } else {
+        this.state = Tokenizer.SCRIPT_DATA_DOUBLE_ESCAPED;
+        return false;
+      }
     }
     if (c != null && isAsciiAlpha(c)) {
-      this.tempBuffer.push(c);
+      this.tempBuffer += c;
       this._appendText(c);
       return false;
     }
